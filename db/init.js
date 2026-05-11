@@ -295,6 +295,16 @@ async function initDb() {
       await client.query(`CREATE INDEX IF NOT EXISTS idx_${t}_needs_review ON ${t}(needs_review) WHERE needs_review = true`);
     }
 
+    // Account custom objects (DDA, Loans, Time Deposits) now sync the
+    // CSV `relationship` column (P/C/M/B/X) to a HubSpot enumeration of
+    // the same name. The picklist is created by scripts/repair_demo_schema.js.
+    // Closes UAT "Verification of Segments" — Civista needs to filter
+    // accounts by Primary vs Co-Owner without going through the
+    // (deferred) association engine.
+    for (const t of ['stg_deposits', 'stg_loans', 'stg_time_deposits']) {
+      await client.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS relationship VARCHAR(8)`);
+    }
+
     // Meta table for sandbox<->prod portal cutover safeguard. Stores the
     // last HubSpot portal id we ran against so the boot check can refuse
     // to start when HUBSPOT_API_KEY flips between sandbox and prod
