@@ -16,19 +16,16 @@
  */
 
 const { recordError } = require('./errors');
-
-const BAR = '═'.repeat(64);
+const { drawBox } = require('./box');
 
 function banner(severity, event, message, context) {
   const log = severity === 'error' ? console.error : console.warn;
   const tag = severity === 'error' ? '✘ ALARM' : '⚠ WARN';
-  log(`╔${BAR}╗`);
-  log(`║ ${tag}  ${event}`);
-  log(`║ ${message}`);
+  const lines = [`${tag}  ${event}`, message];
   if (context && Object.keys(context).length > 0) {
-    log(`║ context: ${JSON.stringify(context)}`);
+    lines.push(`context: ${JSON.stringify(context)}`);
   }
-  log(`╚${BAR}╝`);
+  for (const out of drawBox(lines)) log(out);
 }
 
 async function persist({ severity, event, message, runId, sourceTable, sourceKey, context }) {

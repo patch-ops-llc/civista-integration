@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { Server } = require('ssh2');
 const loud = require('../monitoring/loud');
+const { drawBox } = require('../monitoring/box');
 
 /**
  * Resolve the SSH host key. Two options:
@@ -36,20 +37,20 @@ function startSftpServer(options = {}) {
 
   const key = resolveHostKey();
   if (!key) {
-    console.log('╔════════════════════════════════════════════════════════════════╗');
-    console.log('║  SFTP server NOT started: no host key configured              ║');
-    console.log('║  Set SFTP_HOST_KEY_PEM (env var) or SFTP_HOST_KEY (file path) ║');
-    console.log('╚════════════════════════════════════════════════════════════════╝');
+    for (const out of drawBox([
+      'SFTP server NOT started: no host key configured',
+      'Set SFTP_HOST_KEY_PEM (env var) or SFTP_HOST_KEY (file path)',
+    ])) console.log(out);
     return null;
   }
 
   // Refuse to start with an empty password — an empty SFTP_PASS would accept
   // any connection from the configured username.
   if (!process.env.SFTP_PASS || process.env.SFTP_PASS.trim() === '') {
-    console.error('╔════════════════════════════════════════════════════════════════╗');
-    console.error('║  SFTP server NOT started: SFTP_PASS is empty or unset         ║');
-    console.error('║  Refusing to run with unauthenticated access                  ║');
-    console.error('╚════════════════════════════════════════════════════════════════╝');
+    for (const out of drawBox([
+      'SFTP server NOT started: SFTP_PASS is empty or unset',
+      'Refusing to run with unauthenticated access',
+    ])) console.error(out);
     return null;
   }
 
@@ -58,12 +59,11 @@ function startSftpServer(options = {}) {
   // informative message. Surface the conflict at the right place.
   const httpPort = parseInt(process.env.PORT || '3000', 10);
   if (port === httpPort) {
-    console.error('╔════════════════════════════════════════════════════════════════╗');
-    console.error('║  SFTP server NOT started: SFTP_PORT === PORT                  ║');
-    console.error(`║  Both want :${port}. Set PORT to a different value (Railway`);
-    console.error('║  default is 8080) or set SFTP_PORT to something other than    ║');
-    console.error(`║  ${port}. Common fix: remove PORT env var so Railway auto-sets it.║`);
-    console.error('╚════════════════════════════════════════════════════════════════╝');
+    for (const out of drawBox([
+      'SFTP server NOT started: SFTP_PORT === PORT',
+      `Both want :${port}. Set PORT to a different value (Railway default is 8080) or set SFTP_PORT to something other than ${port}.`,
+      'Common fix: remove PORT env var so Railway auto-sets it.',
+    ])) console.error(out);
     return null;
   }
 
@@ -218,12 +218,12 @@ function startSftpServer(options = {}) {
   });
 
   server.listen(port, '0.0.0.0', () => {
-    console.log('╔════════════════════════════════════════════════════════════════╗');
-    console.log(`║  SFTP server listening on port ${String(port).padEnd(33)}║`);
-    console.log(`║  Host key source: ${key.source.padEnd(44)}║`);
-    console.log(`║  Auth: password, user: ${allowedUser.padEnd(40)}║`);
-    console.log(`║  Incoming dir: ${incomingDir.padEnd(48)}║`);
-    console.log('╚════════════════════════════════════════════════════════════════╝');
+    for (const out of drawBox([
+      `SFTP server listening on port ${port}`,
+      `Host key source: ${key.source}`,
+      `Auth: password, user: ${allowedUser}`,
+      `Incoming dir: ${incomingDir}`,
+    ])) console.log(out);
   });
 
   return server;

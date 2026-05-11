@@ -304,9 +304,11 @@ async function quarantineFile(filePath, quarantineDir, result) {
 }
 
 async function runFullSync(incomingDir, archiveDir, quarantineDir) {
-  console.log(`\n${'='.repeat(60)}`);
-  console.log(`Starting full sync at ${new Date().toISOString()}`);
-  console.log(`${'='.repeat(60)}`);
+  const header = `Starting full sync at ${new Date().toISOString()}`;
+  const bar = '='.repeat(header.length);
+  console.log(`\n${bar}`);
+  console.log(header);
+  console.log(bar);
 
   if (!quarantineDir) quarantineDir = path.join(path.dirname(archiveDir), 'quarantine');
 
