@@ -137,14 +137,33 @@ async function repairDisclosure(object, groupName) {
 async function repairDateOfBirth() {
   const object = 'contacts';
   const existing = await getProperty(object, DOB_NAME);
-  if (existing && existing.type === 'date' && existing.fieldType === 'date') {
+  if (!existing) {
+    // Created from scratch (unlikely — HubSpot ships this property by default)
+    await createProperty(object, {
+      name: DOB_NAME,
+      label: DOB_LABEL,
+      groupName: 'contactinformation',
+      type: 'date',
+      fieldType: 'date',
+    });
+    console.log(`  ${object}.${DOB_NAME}: created as date/date`);
+    return;
+  }
+  if (existing.type === 'date' && existing.fieldType === 'date') {
     console.log(`  ${object}.${DOB_NAME}: already date/date → no change`);
     return;
   }
-  if (existing) {
-    console.log(`  ${object}.${DOB_NAME}: archiving existing ${existing.type}/${existing.fieldType}...`);
-    await archiveProperty(object, DOB_NAME);
+  if (existing.hubspotDefined) {
+    // HubSpot ships date_of_birth as string/text and refuses to delete it
+    // (it's reserved + referenced by built-in lists). The integration's
+    // coerceDateForHubSpot emits "YYYY-MM-DD" strings, which HubSpot accepts
+    // on this string field. No sync failure occurs; the semantic mismatch
+    // (date intent vs string storage) is unavoidable and harmless.
+    console.log(`  ${object}.${DOB_NAME}: HubSpot built-in string property, cannot be retyped → leaving as ${existing.type}/${existing.fieldType} (no sync failure; ISO-string date is accepted as-is)`);
+    return;
   }
+  console.log(`  ${object}.${DOB_NAME}: archiving existing ${existing.type}/${existing.fieldType}...`);
+  await archiveProperty(object, DOB_NAME);
   await createProperty(object, {
     name: DOB_NAME,
     label: DOB_LABEL,
