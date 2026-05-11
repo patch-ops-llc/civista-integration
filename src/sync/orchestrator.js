@@ -25,6 +25,50 @@ const FILE_SOURCE_MAP = {
   'HubSpot_Debit_Card.csv': 'debit_cards',
 };
 
+// Accept the canonical filename plus three common suffixes that occur in the
+// wild without changing the source semantics:
+//   - macOS Finder dedup:  "HubSpot_CIF 1.csv", "HubSpot_CIF 2.csv"
+//   - Windows Explorer dedup: "HubSpot_CIF (1).csv"
+//   - date-stamped delivery: "HubSpot_CIF_20260508.csv" / "HubSpot_CIF-20260508.csv"
+// Anything outside this list (e.g. "HubSpot_CIF_backup.csv") is rejected so a
+// stray file can't masquerade as the nightly drop.
+const ACCEPTED_SUFFIX_DESCRIPTION =
+  'optionally suffixed with macOS dedup " N", Windows dedup " (N)", or "_YYYYMMDD"/"-YYYYMMDD"';
+
+function buildAcceptPattern(canonical) {
+  const stem = canonical.replace(/\.csv$/, '');
+  const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${escaped}(?: \\d+| \\(\\d+\\)|[_-]\\d{8})?\\.csv$`);
+}
+
+// Resolve, for each canonical source, the single file in incomingDir that
+// should be processed this run. When multiple candidates match (e.g. operator
+// dropped both "HubSpot_CIF.csv" and "HubSpot_CIF 1.csv"), we pick the most
+// recent by mtime and return the rest as duplicates for the caller to
+// quarantine — silently dropping a stale copy is a data-integrity hazard.
+function resolveSourceFiles(incomingDir, files, syncOrder) {
+  const resolved = {};
+  const duplicates = [];
+  for (const canonical of syncOrder) {
+    const pattern = buildAcceptPattern(canonical);
+    const matches = files
+      .filter(f => pattern.test(f))
+      .map(name => {
+        const fullPath = path.join(incomingDir, name);
+        let mtime = 0;
+        try { mtime = fs.statSync(fullPath).mtimeMs; } catch { /* deleted between readdir and stat */ }
+        return { name, fullPath, mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+    if (matches.length === 0) continue;
+    resolved[canonical] = matches[0];
+    for (let i = 1; i < matches.length; i++) {
+      duplicates.push({ canonical, ...matches[i] });
+    }
+  }
+  return { resolved, duplicates };
+}
+
 // For each staging table, which HubSpot sync function, which column is the
 // unique id, and which source CSV the rows came from (for loud-event context).
 const STAGING_SYNC = {
@@ -284,12 +328,33 @@ async function runFullSync(incomingDir, archiveDir, quarantineDir) {
     'HubSpot_CD.csv', 'HubSpot_Debit_Card.csv',
   ];
 
+  const { resolved, duplicates } = resolveSourceFiles(incomingDir, files, syncOrder);
+
+  // Quarantine duplicate matches before processing so a stale copy can't be
+  // re-picked next run. The chosen-most-recent file proceeds normally.
+  if (duplicates.length > 0) {
+    fs.mkdirSync(quarantineDir, { recursive: true });
+    for (const dup of duplicates) {
+      await loud.warn({
+        event: 'duplicate_source_csv_resolved',
+        message: `Multiple files matched ${dup.canonical}. Picked most recent (${resolved[dup.canonical].name}); quarantining ${dup.name}.`,
+        context: { canonical: dup.canonical, picked: resolved[dup.canonical].name, quarantined: dup.name, mtime: new Date(dup.mtime).toISOString() },
+      });
+      try {
+        fs.renameSync(dup.fullPath, path.join(quarantineDir, dup.name));
+      } catch (e) {
+        console.warn(`Failed to quarantine duplicate ${dup.name}: ${e.message}`);
+      }
+    }
+  }
+
   for (const filename of syncOrder) {
-    if (!files.includes(filename)) {
+    const match = resolved[filename];
+    if (!match) {
       await loud.warn({
         event: 'missing_csv',
         message: `Expected nightly file missing: ${filename}. Skipping this source for this run.`,
-        context: { incomingDir, expectedFiles: syncOrder, found: files },
+        context: { incomingDir, expected: filename, accepted: ACCEPTED_SUFFIX_DESCRIPTION, found: files },
       });
       continue;
     }
@@ -297,7 +362,7 @@ async function runFullSync(incomingDir, archiveDir, quarantineDir) {
     const source = FILE_SOURCE_MAP[filename];
     if (!source) continue;
 
-    const filePath = path.join(incomingDir, filename);
+    const filePath = match.fullPath;
     const fileResults = await syncFile(source, filePath);
     results.push(...fileResults);
 
