@@ -56,16 +56,7 @@ const CIF_COMMON = [
   { csv: 'EnrollmentDt',        prop: 'enrollment_date',                         type: 'date', coerce: 'date_only' },
   { csv: 'CentralGroupID',      prop: 'central_group_id',                        type: 'string' },
   { csv: 'TextOptIn',           prop: 'text_opt_in',                             type: 'bool', coerce: 'yn_to_bool' },
-  // DiscAcpt: source CSV is Y/N flag, HubSpot's `estatement_disclosure_acceptance_date`
-  // is type=date. The mapping is wrong on the upstream side. Sending Y/N produces a
-  // HubSpot 400 per record (~80 rejections per sync), which floods the data-issues
-  // panel and obscures real failures. Held with `send: false` and surfaced ONCE in
-  // mapping_issues at boot. Raw value is still preserved verbatim in raw_csv per
-  // memory rule 3. Civista must reconcile the source format or HubSpot property
-  // type before this can ship.
-  { csv: 'DiscAcpt',            prop: 'estatement_disclosure_acceptance_date',   type: 'date',
-    send: false,
-    holdReason: 'Source CSV is Y/N flag; HubSpot property is date. Held to avoid ~80 per-sync rejections. Civista to reconcile.' },
+  { csv: 'DiscAcpt',            prop: 'estatement_disclosure_acceptance_date',   type: 'bool', coerce: 'yn_to_bool' },
 ];
 
 // Contact-only properties (don't exist on HubSpot companies).
@@ -107,7 +98,9 @@ const DDA_FIELDS = [
   { csv: 'acctstatus',    prop: 'deposit_account_status',   type: 'enumeration' },
   { csv: 'promocode',     prop: 'promo_code',               type: 'string' },
   { csv: 'openonline',    prop: 'opened_online_yn',         type: 'bool', coerce: 'yn_to_bool' },
-  // 'relationship' field in CSV has no HubSpot equivalent — intentionally dropped.
+  // Source values P/C/M/B/X arrive trimmed (csv-parser.js:176). HubSpot picklist
+  // defined in scripts/repair_demo_schema.js with descriptive labels.
+  { csv: 'relationship',  prop: 'relationship',             type: 'enumeration' },
 ];
 
 // Loans CSV → Loans (custom object 2-60442977).
@@ -127,7 +120,7 @@ const LOANS_FIELDS = [
   { csv: 'officrcode',      prop: 'officer_name',           type: 'string' },
   { csv: 'acctstatus',      prop: 'loan_status',            type: 'enumeration' },
   { csv: 'origbal',         prop: 'original_balance',       type: 'number' },
-  // 'relationship' dropped — no HubSpot target.
+  { csv: 'relationship',    prop: 'relationship',           type: 'enumeration' },
 ];
 
 // CD CSV → Time Deposits (custom object 2-60442980).
@@ -146,7 +139,7 @@ const CD_FIELDS = [
   { csv: 'officrcode',    prop: 'officer_name',             type: 'string' },
   { csv: 'acctstatus',    prop: 'time_deposit_status',      type: 'enumeration' },
   { csv: 'openonline',    prop: 'opened_online_yn',         type: 'bool', coerce: 'yn_to_bool' },
-  // 'relationship' dropped.
+  { csv: 'relationship',  prop: 'relationship',             type: 'enumeration' },
 ];
 
 // Debit Card CSV → Debit Cards (custom object 2-60442979).
