@@ -76,3 +76,38 @@ loud event.
 4. If they differ (or stored is empty): TRUNCATEs `sync_log`,
    `sync_errors`, `mapping_issues`, `hubspot_id_map`, `shipped_records`,
    and all 6 `stg_*` tables. Writes the new portal id to `meta`.
+
+## Production portal mirror — schema changes to apply before flipping the key
+
+Some HubSpot property type fixes that were made on the sandbox during UAT
+must be applied to the production portal *before* `HUBSPOT_API_KEY` flips
+to the prod token. These are HubSpot CRM schema edits, not code changes,
+and the integration assumes the prod portal matches sandbox on the day of
+cutover.
+
+**`estatement_disclosure_acceptance_date` — change type from `date` to
+`bool/booleancheckbox` on Contacts and Companies.**
+
+The CSV column `DiscAcpt` carries Y / N values. The original prod schema
+typed this property as a date, which silently rejected every record. The
+sandbox was repaired by archiving the old property and recreating it with
+the same name as a checkbox. To mirror this on prod, run the same script
+against the prod portal *before* re-pointing the integration:
+
+```bash
+# With the prod HUBSPOT_API_KEY set in env (locally or in a one-off
+# Railway run), and BEFORE meta.last_portal_id is updated:
+HUBSPOT_API_KEY=<prod_token> node scripts/repair_disclosure_property.js
+```
+
+The script is idempotent — re-runs detect the new bool type and skip.
+
+If the prod property already holds real `date`-typed values that you want
+to preserve, export them via HubSpot's UI before running the script
+(archive is reversible for ~30 days, but the recreated property does not
+inherit old values). For Civista, no real date data was ever written to
+this property — only Y/N values that HubSpot rejected — so a clean
+recreate is safe.
+
+After the schema mirror is in place, then run `scripts/cutover-portal.js`
+with the new key as documented above.
