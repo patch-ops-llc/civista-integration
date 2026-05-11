@@ -11,4 +11,3 @@ validate.sh
 *.vtt
 scripts/__pycache__/
 civista-railway-env.json
-.uat-samples/
