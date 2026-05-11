@@ -25,14 +25,20 @@ function normalizeEmail(val) {
  *   value:    trimmed email if it parses as user@host.tld, else null
  *   problem:  human-readable reason when the value was present but invalid
  */
+// Source CRM uses sentinel strings (alongside blanks) to indicate "no email
+// on file / do not contact via email" for a customer. These are explicit
+// opt-out signals from Civista's data, not malformed addresses, so they
+// resolve to null without firing the email_suspect loud.warn that genuine
+// malformed inputs (like "abc123" or "foo@") still trigger.
+const NO_EMAIL_INDICATORS = new Set(['', 'none', 'collect', 'decline', 'declined']);
+
 function coerceEmailForHubSpot(val) {
   if (val === null || val === undefined) return { value: null };
   const raw = String(val);
-  if (raw.trim() === '' || raw.trim().toLowerCase() === 'none') return { value: null };
   const trimmed = raw.trim();
+  if (NO_EMAIL_INDICATORS.has(trimmed.toLowerCase())) return { value: null };
   // Loose RFC-ish check: local@domain.tld with no whitespace or angle brackets.
-  // Aligns with HubSpot's built-in INVALID_EMAIL validator (rejects "collect",
-  // "n/a", spaces, etc.) without going full RFC 5322.
+  // Aligns with HubSpot's built-in INVALID_EMAIL validator without going full RFC 5322.
   if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(trimmed)) return { value: trimmed.toLowerCase() };
   const preview = trimmed.length > 40 ? trimmed.slice(0, 40) + '…' : trimmed;
   return { value: null, problem: `unparseable email: "${preview}"` };
