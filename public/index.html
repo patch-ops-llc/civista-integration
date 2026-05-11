@@ -94,6 +94,19 @@
   .issues-card.clean { background:#0f1f14; border-color:#1f4f2a; border-left-color:#3fb950; }
   .issues-card h3 { margin:0 0 8px 0; font-size:14px; color:var(--err); }
   .issues-card.clean h3 { color:#3fb950; }
+
+  /* Coercion Audit — informational, not errors. Greyscale styling so the
+     panel doesn't read as alarms during a demo. The data is identical to
+     issues-card structure; only the visual treatment is muted. */
+  .coercion-card { background:var(--panel2); border:1px solid var(--border); border-left:4px solid var(--dim); border-radius:var(--radius); padding:12px 14px; margin-bottom:10px; }
+  .coercion-card h3 { margin:0 0 8px 0; font-size:13px; color:#c9d1d9; font-weight:600; }
+  .coerce-fold { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); margin-bottom:14px; }
+  .coerce-fold > summary { cursor:pointer; padding:10px 14px; list-style:none; display:flex; align-items:center; gap:8px; }
+  .coerce-fold > summary::-webkit-details-marker { display:none; }
+  .coerce-fold > summary::before { content:'▶'; color:var(--dim); display:inline-block; transition:transform 0.15s; font-size:11px; }
+  .coerce-fold[open] > summary::before { transform:rotate(90deg); }
+  .coerce-fold > summary h2 { display:inline-block; margin:0; }
+  .coerce-fold > .coerce-body { padding:6px 0 14px 0; }
   .issues-list { margin:0; padding:0; list-style:none; font-family:var(--font-mono); font-size:12px; }
   .issues-list li { padding:4px 0; border-bottom:1px dashed var(--border); }
   .issues-list li:last-child { border-bottom:none; }
@@ -194,10 +207,17 @@
     <div style="color:var(--dim); font-size:11px;">No HubSpot calls yet. Try the Schema-Check or Run Full Sync buttons.</div>
   </div>
 
-  <h2>🧾 Coercion Audit <span style="color:var(--dim); font-weight:400; margin-left:8px; font-size:12px;" id="coerce-status">loading...</span></h2>
-  <div class="issues-wrap" id="coerce-wrap">
-    <p style="color:var(--dim); font-size:12px; padding:0 20px;">Loading…</p>
-  </div>
+  <details class="coerce-fold">
+    <summary>
+      <h2>🧾 Normalizations <span style="color:var(--dim); font-weight:400; margin-left:8px; font-size:12px;" id="coerce-status">loading…</span></h2>
+    </summary>
+    <div class="coerce-body">
+      <p style="color:var(--dim); font-size:11px; padding:0 20px 8px 20px; margin:0;">Expected format conversions applied so HubSpot accepts the value (e.g., source <code>Y/N</code> → HubSpot <code>true/false</code>; timestamp → date-only; lowercased email). These are <strong>not errors</strong>; the verbatim source value is preserved on every row in <code>raw_csv</code>.</p>
+      <div class="issues-wrap" id="coerce-wrap">
+        <p style="color:var(--dim); font-size:12px; padding:0 20px;">Loading…</p>
+      </div>
+    </div>
+  </details>
 
   <h2>⚠ Data Issues <span style="color:var(--dim); font-weight:400; margin-left:8px; font-size:12px;" id="issues-status">loading...</span></h2>
   <div class="issues-wrap" id="issues-wrap">
@@ -664,11 +684,11 @@ async function loadCoercions() {
     }
 
     const total = types.reduce((s, k) => s + byCoerce[k].count, 0);
-    $coerceStatus.textContent = `${total} transformations across ${types.length} coerce types`;
+    $coerceStatus.textContent = `${total} normalizations applied (${types.length} types) — expand for details`;
 
     for (const type of types) {
       const info = byCoerce[type];
-      const card = el('div', { className: 'issues-card' });
+      const card = el('div', { className: 'coercion-card' });
       card.appendChild(el('h3', {}, `${type} · ${info.count} row${info.count === 1 ? '' : 's'}`));
       const propEntries = Object.entries(info.props).sort((a, b) => b[1] - a[1]);
       const list = el('ul', { className: 'issues-list' });
