@@ -159,6 +159,24 @@ if (ENABLE_DEBUG_UI) {
   app.get('/', (req, res) => res.status(404).send('Debug UI disabled (set ENABLE_DEBUG_UI=1)'));
 }
 
+// SFTP connection defaults — read by the UI on page load to pre-fill the
+// SFTP form. Reads:
+//   - RAILWAY_TCP_PROXY_DOMAIN / _PORT (auto-set by Railway when TCP Proxy
+//     is enabled on the service; correct values even after Railway rotates
+//     the external port)
+//   - SFTP_USER / SFTP_PASS (operator-configured)
+// All values are GET, so they're publicly reachable on the Railway URL.
+// This is intentional for demo ergonomics — the sandbox SFTP creds let an
+// attacker upload CSVs into a sandbox staging dir, nothing more.
+app.get('/api/sftp-defaults', (req, res) => {
+  res.json({
+    host: process.env.RAILWAY_TCP_PROXY_DOMAIN || null,
+    port: process.env.RAILWAY_TCP_PROXY_PORT || null,
+    username: process.env.SFTP_USER || null,
+    password: process.env.SFTP_PASS || null,
+  });
+});
+
 // Service info — public, no auth, no flag.
 app.get('/api/info', (req, res) => {
   res.json({

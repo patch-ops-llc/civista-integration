@@ -280,6 +280,26 @@ const $btnClearLog = qs('#btn-clear-log');
   node.addEventListener('input', () => sessionStorage.setItem('sftp_' + k, node.value));
 });
 
+// First-visit pre-fill from the server. Railway auto-sets TCP_PROXY_DOMAIN
+// and TCP_PROXY_PORT; SFTP_USER/SFTP_PASS come from operator-set env vars.
+// Only fills fields that are currently blank — anything the operator has
+// typed (persisted in sessionStorage above) wins.
+(async () => {
+  try {
+    const r = await fetch('/api/sftp-defaults');
+    if (!r.ok) return;
+    const d = await r.json();
+    const map = { host: 'host', port: 'port', user: 'username', pass: 'password' };
+    for (const [k, srvKey] of Object.entries(map)) {
+      const node = qs('#sftp-' + k);
+      if (!node.value && d[srvKey]) {
+        node.value = d[srvKey];
+        sessionStorage.setItem('sftp_' + k, d[srvKey]);
+      }
+    }
+  } catch {}
+})();
+
 function creds() {
   return {
     host: $host.value.trim(),
