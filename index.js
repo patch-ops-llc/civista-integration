@@ -101,6 +101,17 @@ const HAS_AUTH_CREDS = !!(process.env.SFTP_USER && process.env.SFTP_PASS);
 app.use((req, res, next) => {
   // /health must remain unauthenticated for Railway healthcheck.
   if (req.path === '/health') return next();
+  // Read-only HTTP methods are public — the operator UI and its data
+  // fetches are viewable without creds during demos. Write operations
+  // (POST/PUT/DELETE/PATCH) still require Basic Auth so destructive
+  // actions need authentication. RFC 9110 §9.2.1: GET/HEAD/OPTIONS are
+  // safe methods and don't modify state. Aligns with the demo workflow:
+  // operator opens the URL in front of a client, UI loads with data,
+  // browser prompts for creds only when they click "Run Full Sync" or
+  // "Demo Reset".
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+    return next();
+  }
   // If creds aren't configured we fail closed: 503 with a loud alarm.
   if (!HAS_AUTH_CREDS) {
     loud.alarm({
