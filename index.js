@@ -255,6 +255,133 @@ app.post('/sync', async (req, res) => {
   }
 });
 
+// -------------------- Sandbox reset (admin) --------------------
+//
+// POST /admin/reset-sandbox — wipes every record in the 6 HubSpot CRM objects
+// AND truncates the local ledger (shipped_records, hubspot_id_map, staging
+// tables, sync_log, sync_errors, mapping_issues). After this, the next /sync
+// will repopulate HubSpot from scratch.
+//
+// SAFETY: refuses to run if the API key does not target portalId=51313397
+// AND accountType=SANDBOX. Auth is enforced by the global Basic Auth gate.
+//
+// Returns a per-object summary { before, after } and the list of truncated
+// tables. Long-poll friendly — typical run < 30s for ~250 records.
+app.post('/admin/reset-sandbox', async (req, res) => {
+  const apiKey = process.env.HUBSPOT_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'HUBSPOT_API_KEY not set' });
+
+  const EXPECTED_PORTAL_ID = 51313397;
+  const EXPECTED_ACCOUNT_TYPE = 'SANDBOX';
+
+  // (1) Portal safety guard — no silent prod wipes.
+  let portalId, accountType;
+  try {
+    const r = await fetch('https://api.hubapi.com/account-info/v3/details', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      return res.status(502).json({ error: `account-info HTTP ${r.status}: ${body.message || 'no body'}` });
+    }
+    portalId = body.portalId;
+    accountType = body.accountType;
+  } catch (e) {
+    return res.status(502).json({ error: `account-info fetch failed: ${describeError(e)}` });
+  }
+  if (portalId !== EXPECTED_PORTAL_ID || accountType !== EXPECTED_ACCOUNT_TYPE) {
+    return res.status(403).json({
+      error: 'safety guard failed',
+      detail: `key targets portalId=${portalId} (${accountType}), not ${EXPECTED_PORTAL_ID} ${EXPECTED_ACCOUNT_TYPE}`,
+      hint: 'refusing to wipe',
+    });
+  }
+
+  const OBJECTS = [
+    ['contacts',    'Contacts'],
+    ['companies',   'Companies'],
+    ['2-60442978',  'Deposits'],
+    ['2-60442977',  'Loans'],
+    ['2-60442980',  'Time Deposits'],
+    ['2-60442979',  'Debit Cards'],
+  ];
+
+  // (2) Wipe each HubSpot object — paginate via /list, batch-archive 100 at a time.
+  const hsSummary = {};
+  for (const [obj, label] of OBJECTS) {
+    let before = null, after = null;
+    try {
+      const s1 = await fetch(`https://api.hubapi.com/crm/v3/objects/${obj}/search`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 1 }),
+      });
+      const b1 = await s1.json().catch(() => ({}));
+      before = b1.total ?? null;
+    } catch (e) { /* leave before=null */ }
+
+    // Drain in 100-id pages until empty.
+    for (let safetyLoop = 0; safetyLoop < 100; safetyLoop++) {
+      const lr = await fetch(`https://api.hubapi.com/crm/v3/objects/${obj}?limit=100`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      const lb = await lr.json().catch(() => ({}));
+      if (!lr.ok) {
+        return res.status(502).json({ error: `list ${obj} HTTP ${lr.status}: ${lb.message || 'no body'}` });
+      }
+      const ids = (lb.results || []).map(r => r.id);
+      if (ids.length === 0) break;
+      const ar = await fetch(`https://api.hubapi.com/crm/v3/objects/${obj}/batch/archive`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inputs: ids.map(id => ({ id })) }),
+      });
+      if (!ar.ok && ar.status !== 204) {
+        const ab = await ar.json().catch(() => ({}));
+        return res.status(502).json({ error: `archive ${obj} HTTP ${ar.status}: ${ab.message || 'no body'}` });
+      }
+    }
+
+    try {
+      const s2 = await fetch(`https://api.hubapi.com/crm/v3/objects/${obj}/search`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 1 }),
+      });
+      const b2 = await s2.json().catch(() => ({}));
+      after = b2.total ?? null;
+    } catch (e) { /* leave after=null */ }
+
+    hsSummary[label] = { obj, before, after };
+  }
+
+  // (3) Truncate ledger + staging so next /sync repopulates HubSpot fresh.
+  // Mirrors scripts/cutover-portal.js. Note: meta.last_portal_id stays intact —
+  // we're resetting data, not changing portals.
+  const TRUNCATE = [
+    'sync_log', 'sync_errors', 'mapping_issues',
+    'hubspot_id_map', 'shipped_records',
+    'stg_contacts', 'stg_companies', 'stg_deposits',
+    'stg_loans', 'stg_time_deposits', 'stg_debit_cards',
+  ];
+  const truncated = [], skipped = [];
+  for (const t of TRUNCATE) {
+    try {
+      await pool.query(`TRUNCATE ${t} RESTART IDENTITY`);
+      truncated.push(t);
+    } catch (e) {
+      skipped.push({ table: t, error: describeError(e) });
+    }
+  }
+
+  res.json({
+    portal: { portalId, accountType, expected: EXPECTED_PORTAL_ID },
+    hubspot: hsSummary,
+    db: { truncated, skipped },
+    at: new Date().toISOString(),
+  });
+});
+
 // -------------------- SFTP auth (test only) --------------------
 app.post('/api/sftp-auth', async (req, res) => {
   const { host, port, username, password } = req.body || {};

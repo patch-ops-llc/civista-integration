@@ -29,6 +29,38 @@ if not KEY:
 
 BASE = 'https://api.hubapi.com'
 
+# Hard-coded sandbox portal id. Refuse to run if the key targets anything else.
+# Override only by explicit ACK_PORTAL_ID=<id> + ACK_ACCOUNT_TYPE=SANDBOX in env
+# when intentionally pointing at a different sandbox.
+EXPECTED_PORTAL_ID = int(os.environ.get('ACK_PORTAL_ID', '51313397'))
+EXPECTED_ACCOUNT_TYPE = os.environ.get('ACK_ACCOUNT_TYPE', 'SANDBOX')
+
+
+def _safety_check():
+    """Refuse to wipe unless the key clearly targets a sandbox we expect."""
+    req = urllib.request.Request(BASE + '/account-info/v3/details')
+    req.add_header('Authorization', f'Bearer {KEY}')
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            info = json.loads(r.read().decode())
+    except Exception as e:
+        print(f'SAFETY CHECK FAILED: cannot fetch account-info ({e}). Refusing to wipe.', file=sys.stderr)
+        sys.exit(2)
+    portal_id = info.get('portalId')
+    acct_type = info.get('accountType')
+    print(f'Portal check: portalId={portal_id}  accountType={acct_type}  '
+          f'expected={EXPECTED_PORTAL_ID} / {EXPECTED_ACCOUNT_TYPE}', flush=True)
+    if portal_id != EXPECTED_PORTAL_ID or acct_type != EXPECTED_ACCOUNT_TYPE:
+        print(f'SAFETY CHECK FAILED: key targets portal={portal_id} ({acct_type}), '
+              f'NOT the expected {EXPECTED_PORTAL_ID} {EXPECTED_ACCOUNT_TYPE}. '
+              f'Refusing to wipe. If you genuinely need to wipe a different portal, '
+              f'set ACK_PORTAL_ID=<id> ACK_ACCOUNT_TYPE=<TYPE> and re-run.',
+              file=sys.stderr)
+        sys.exit(2)
+
+
+_safety_check()
+
 OBJECTS = [
     ('contacts',    'Contacts'),
     ('companies',   'Companies'),
