@@ -76,11 +76,59 @@ const upload = multer({ dest: TMP_UPLOAD_DIR });
 
 app.use(express.json());
 
-// HTTP Basic Auth removed entirely. The server never returns 401 +
-// WWW-Authenticate: Basic, so Chrome's native sign-in dialog can never
-// appear. Sandbox-only data; the Railway URL is not publicly indexed;
-// /sync still has its X-Sync-Token soft check inside the route handler;
-// /api/demo-reset still requires ENABLE_DEMO_RESET=1 in env.
+// HTTP Basic Auth gate — without WWW-Authenticate header.
+//
+// Every route except /health requires Authorization: Basic <base64(user:pass)>
+// where user=SFTP_USER and pass=SFTP_PASS (same creds the operator already
+// knows from SFTP). curl users authenticate via `-u user:pass`. We deliberately
+// do NOT send a WWW-Authenticate response header on 401: that header is what
+// triggers Chrome's native sign-in popup. Without it, browsers just see a
+// plain 401 page and do not prompt. curl preemptively sends the Authorization
+// header from `-u` so it doesn't need a challenge.
+//
+// Constant-time comparison via SHA-256 + crypto.timingSafeEqual so we don't
+// leak password length or content through timing.
+const crypto = require('crypto');
+function digestForCompare(s) {
+  return crypto.createHash('sha256').update(String(s || ''), 'utf8').digest();
+}
+const EXPECTED_USER_DIGEST = digestForCompare(process.env.SFTP_USER || '');
+const EXPECTED_PASS_DIGEST = digestForCompare(process.env.SFTP_PASS || '');
+const HAS_AUTH_CREDS = !!(process.env.SFTP_USER && process.env.SFTP_PASS);
+
+app.use((req, res, next) => {
+  // /health is the only unauthenticated route — Railway's healthcheck hits
+  // it. Its response is already stripped to {status, database} only.
+  if (req.path === '/health') return next();
+  if (!HAS_AUTH_CREDS) {
+    return res.status(503).type('text/plain').send('Service auth misconfigured (SFTP_USER/SFTP_PASS env not set)');
+  }
+  const header = req.get('Authorization') || '';
+  if (!header.startsWith('Basic ')) {
+    // No WWW-Authenticate header on this 401 — see comment block above.
+    return res.status(401).type('text/plain').send('Authentication required. Use: curl -u "<SFTP_USER>:<SFTP_PASS>" ...\n');
+  }
+  let user = '', pass = '';
+  try {
+    const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+    const idx = decoded.indexOf(':');
+    if (idx >= 0) {
+      user = decoded.slice(0, idx);
+      pass = decoded.slice(idx + 1);
+    }
+  } catch (_) { /* malformed header */ }
+  const userOk = crypto.timingSafeEqual(digestForCompare(user), EXPECTED_USER_DIGEST);
+  const passOk = crypto.timingSafeEqual(digestForCompare(pass), EXPECTED_PASS_DIGEST);
+  if (!userOk || !passOk) {
+    loud.warn({
+      event: 'api_auth_rejected',
+      message: `API auth rejected for user="${user.slice(0, 24)}"`,
+      context: { ip: req.ip || req.socket.remoteAddress, path: req.path },
+    }).catch(() => {});
+    return res.status(401).type('text/plain').send('Invalid credentials\n');
+  }
+  next();
+});
 
 // Static assets for the debug UI — only when ENABLE_DEBUG_UI=1.
 // When the flag is off, GET / and any /index.html etc. return 404 so the
