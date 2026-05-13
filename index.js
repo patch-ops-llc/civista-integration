@@ -135,22 +135,30 @@ const PROCESS_BOOT_AT = Date.now();
 const STARTUP_GRACE_MS = 60_000;
 
 app.get('/health', async (req, res) => {
+  // PUBLIC endpoint — Railway healthcheck hits this unauthenticated. Strip
+  // the response to the bare minimum (status + database) so we do NOT leak
+  // sync_log details, source_keys (which contain CIF numbers / customer
+  // identifiers), table names, recent error messages, or quarantine counts.
+  // The detailed status surface that the operator UI uses (via /api/issues,
+  // /api/schema-check) stays separate and gated where appropriate.
   const inGrace = (Date.now() - PROCESS_BOOT_AT) < STARTUP_GRACE_MS;
-  // Race the DB-backed health query against a 2s timeout.
   const timeoutMs = 2000;
-  const timer = new Promise((resolve) => setTimeout(() => resolve({ status: 'unhealthy', database: 'unreachable', error: `health check timed out after ${timeoutMs}ms` }), timeoutMs));
-  let status;
+  const timer = new Promise((resolve) => setTimeout(() => resolve({ status: 'unhealthy', database: 'unreachable' }), timeoutMs));
+  let full;
   try {
-    status = await Promise.race([getHealthStatus(), timer]);
+    full = await Promise.race([getHealthStatus(), timer]);
   } catch (err) {
-    status = { status: 'unhealthy', database: 'unreachable', error: describeError(err) };
+    full = { status: 'unhealthy', database: 'unreachable' };
   }
-  if (status && status.database === 'connected') return res.status(200).json(status);
+  // Whitelist: only status + database leave the server. Everything else
+  // from getHealthStatus() (tables, recent_errors, quarantine_total) is
+  // intentionally dropped here.
+  const minimal = { status: full && full.status, database: full && full.database };
+  if (minimal.database === 'connected') return res.status(200).json(minimal);
   if (inGrace) {
-    // Don't fail healthcheck during boot. Tell Railway we're starting.
-    return res.status(200).json({ ...status, status: 'starting', database: 'starting', grace_remaining_ms: STARTUP_GRACE_MS - (Date.now() - PROCESS_BOOT_AT) });
+    return res.status(200).json({ status: 'starting', database: 'starting' });
   }
-  return res.status(503).json(status || { status: 'unhealthy', database: 'unknown' });
+  return res.status(503).json(minimal.status ? minimal : { status: 'unhealthy', database: 'unknown' });
 });
 
 // -------------------- Sync --------------------
