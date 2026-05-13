@@ -10,10 +10,11 @@ const { getHealthStatus } = require('./src/monitoring/health');
 const { startSftpServer } = require('./src/ingestion/sftp-server');
 const { testAuth, uploadFile } = require('./src/sync/sftp-client');
 const { hubspotFetch } = require('./src/sync/hubspot');
-const { eventStream, installConsoleHook, emitHubspot } = require('./src/monitoring/event-stream');
+const { eventStream, installConsoleHook, emitHubspot, getRingBuffer } = require('./src/monitoring/event-stream');
 const { TABLES, CIF_CONTACT_FIELDS, CIF_COMPANY_FIELDS } = require('./src/transform/hubspot-mapping');
 const { describeError } = require('./src/monitoring/errors');
 const loud = require('./src/monitoring/loud');
+const { buildPayload } = require('./src/sync/hubspot');
 
 // Forward all console output to SSE subscribers so the UI log panel sees it.
 installConsoleHook();
@@ -605,6 +606,89 @@ cron.schedule('0 2 * * *', async () => {
 }, { timezone: 'America/New_York' });
 
 // -------------------- Issues feed (UI Data Issues panel) --------------------
+//
+// Map of staging table → key column / source CSV / mapping fields. Centralized
+// here because /api/issues now reports per-source counts from sync_log and a
+// coercion audit synthesized from staging rows when the in-row `coercions`
+// column has been emptied by the diff-skip path.
+const ISSUES_SOURCES = [
+  { source: 'cif_contacts',  stagingTable: 'stg_contacts',      keyColumn: 'cif_number',    fields: CIF_CONTACT_FIELDS },
+  { source: 'cif_companies', stagingTable: 'stg_companies',     keyColumn: 'cif_number',    fields: CIF_COMPANY_FIELDS },
+  { source: 'dda',           stagingTable: 'stg_deposits',      keyColumn: 'primary_key',   fields: TABLES.dda.fields },
+  { source: 'loans',         stagingTable: 'stg_loans',         keyColumn: 'primary_key',   fields: TABLES.loans.fields },
+  { source: 'cd',            stagingTable: 'stg_time_deposits', keyColumn: 'primary_key',   fields: TABLES.cd.fields },
+  { source: 'debit_cards',   stagingTable: 'stg_debit_cards',   keyColumn: 'composite_key', fields: TABLES.debit_cards.fields },
+];
+
+// Module-level schema-check cache (60s TTL). Per UAT scenario brief: do NOT
+// hammer HubSpot on every /api/issues hit.
+let SCHEMA_CHECK_CACHE = { at: 0, data: null, ttlMs: 60_000 };
+
+async function computeSchemaCheckSummary() {
+  if (SCHEMA_CHECK_CACHE.data && (Date.now() - SCHEMA_CHECK_CACHE.at) < SCHEMA_CHECK_CACHE.ttlMs) {
+    return SCHEMA_CHECK_CACHE.data;
+  }
+  const apiKey = process.env.HUBSPOT_API_KEY;
+  if (!apiKey) {
+    const data = { objects: [], summary: { total_matched: 0, total_mismatches: 0, error: 'HUBSPOT_API_KEY not set' } };
+    SCHEMA_CHECK_CACHE = { at: Date.now(), data, ttlMs: 60_000 };
+    return data;
+  }
+  const internal = new Set([
+    'id', 'row_hash', 'loaded_at', 'synced_at', 'raw_csv',
+    'db_persist_hash', 'db_verified_at',
+    'hubspot_persist_hash', 'hubspot_verified_at', 'hubspot_verify_diff',
+    'needs_review', 'coercions',
+  ]);
+  const objects = [];
+  let totalMatched = 0, totalMismatches = 0;
+  for (const o of SCHEMA_OBJECTS) {
+    let matched = 0, missingInHs = 0, missingInPg = 0;
+    const errors = [];
+    let pgCols;
+    try {
+      pgCols = await pool.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_name = $1`,
+        [o.stagingTable]
+      );
+    } catch (e) {
+      errors.push(`pg cols: ${describeError(e)}`);
+      objects.push({ label: o.label, matched: 0, missingInHs: 0, missingInPg: 0, status: 'mismatch', errors });
+      totalMismatches++;
+      continue;
+    }
+    const pgColSet = new Set(pgCols.rows.map(r => r.column_name).filter(c => !internal.has(c)));
+    let hsProps = [];
+    try {
+      const hsRes = await fetch(`https://api.hubapi.com/crm/v3/properties/${o.hsObject}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      const body = await hsRes.json().catch(() => ({}));
+      if (hsRes.ok) hsProps = Array.isArray(body.results) ? body.results : [];
+      else errors.push(`hs ${hsRes.status}`);
+    } catch (e) {
+      errors.push(`hs fetch: ${describeError(e)}`);
+    }
+    const hsPropNames = new Set(hsProps.map(p => p.name));
+    for (const col of pgColSet) {
+      if (hsPropNames.has(col)) matched++;
+      else missingInHs++;
+    }
+    // HS-only custom props that we don't populate (ignore hubspotDefined standard props).
+    for (const p of hsProps) {
+      if (p.hubspotDefined) continue;
+      if (!pgColSet.has(p.name)) missingInPg++;
+    }
+    const status = (missingInHs === 0 && missingInPg === 0 && errors.length === 0) ? 'ok' : 'mismatch';
+    if (status === 'mismatch') totalMismatches++;
+    totalMatched += matched;
+    objects.push({ label: o.label, matched, missingInHs, missingInPg, status, errors });
+  }
+  const data = { objects, summary: { total_matched: totalMatched, total_mismatches: totalMismatches } };
+  SCHEMA_CHECK_CACHE = { at: Date.now(), data, ttlMs: 60_000 };
+  return data;
+}
+
 app.get('/api/issues', async (req, res) => {
   try {
     const mappingIssues = await pool.query(
@@ -635,9 +719,55 @@ app.get('/api/issues', async (req, res) => {
        FROM sync_errors ORDER BY created_at DESC LIMIT 50`
     );
 
-    // Hash health across all staging tables (cumulative across runs).
+    // Per-source table from sync_log: latest run per source/staging table.
+    // The 6 sources mirror the staging tables (cif is split into contacts
+    // + companies). For each, we look at the latest sync_log row whose
+    // table_name matches the staging table, and surface the numerics.
     const stagingTables = ['stg_contacts','stg_companies','stg_deposits','stg_loans','stg_time_deposits','stg_debit_cards'];
-    const hashHealth = { csv_to_db: { ok: 0, mismatch: 0, pending: 0 }, db_to_hubspot: { ok: 0, mismatch: 0, pending: 0 } };
+    const perSourceTable = {};
+    for (const t of stagingTables) {
+      try {
+        const r = await pool.query(
+          `SELECT id, started_at, completed_at, records_attempted, records_created,
+                  records_skipped, records_failed, records_updated, row_count
+           FROM sync_log
+           WHERE table_name = $1
+           ORDER BY id DESC LIMIT 1`,
+          [t]
+        );
+        if (r.rows.length > 0) {
+          const row = r.rows[0];
+          perSourceTable[t] = {
+            run_id: row.id,
+            started_at: row.started_at,
+            completed_at: row.completed_at,
+            row_count: row.row_count,
+            records_attempted: row.records_attempted,
+            records_created: row.records_created,
+            records_skipped: row.records_skipped,
+            records_failed: row.records_failed,
+          };
+        } else {
+          perSourceTable[t] = {
+            run_id: null, records_attempted: 0, records_created: 0,
+            records_skipped: 0, records_failed: 0,
+          };
+        }
+      } catch { /* table may not exist yet */ }
+    }
+
+    // Hash health across all staging tables (cumulative across runs).
+    // - csv_to_db / a_to_b (HASH A→B): staging row_hash present + verified vs needs_review.
+    // - db_to_hubspot / b_to_c (HASH B→C): rows whose db state matches what's in HubSpot.
+    //   The diff engine SKIPS already-synced rows on re-sync, so those rows never get a
+    //   hubspot_persist_hash set this run — but they ARE healthy because shipped_records
+    //   already records that exact row_hash made it to HubSpot. Count those as OK.
+    const hashHealth = {
+      csv_to_db:     { ok: 0, mismatch: 0, pending: 0 },
+      db_to_hubspot: { ok: 0, mismatch: 0, pending: 0 },
+      a_to_b:        { ok: 0, mismatch: 0, pending: 0 },
+      b_to_c:        { ok: 0, mismatch: 0, pending: 0 },
+    };
     for (const t of stagingTables) {
       try {
         const r = await pool.query(`
@@ -645,20 +775,112 @@ app.get('/api/issues', async (req, res) => {
             COUNT(*) FILTER (WHERE db_persist_hash IS NOT NULL AND needs_review IS NOT TRUE)::int AS ab_ok,
             COUNT(*) FILTER (WHERE db_persist_hash IS NOT NULL AND needs_review IS TRUE)::int AS ab_mismatch,
             COUNT(*) FILTER (WHERE db_persist_hash IS NULL)::int AS ab_pending,
-            COUNT(*) FILTER (WHERE hubspot_persist_hash IS NOT NULL AND hubspot_verify_diff IS NULL)::int AS bc_ok,
+            COUNT(*) FILTER (WHERE hubspot_persist_hash IS NOT NULL AND hubspot_verify_diff IS NULL)::int AS bc_ok_direct,
             COUNT(*) FILTER (WHERE hubspot_persist_hash IS NOT NULL AND hubspot_verify_diff IS NOT NULL)::int AS bc_mismatch,
-            COUNT(*) FILTER (WHERE hubspot_persist_hash IS NULL)::int AS bc_pending
+            COUNT(*) FILTER (WHERE hubspot_persist_hash IS NULL)::int AS bc_pending_raw,
+            -- Rows present in shipped_records with a matching row_hash count as healthy B→C
+            -- even when this run skipped them (diff-skip path → no hubspot_persist_hash).
+            COUNT(*) FILTER (
+              WHERE hubspot_persist_hash IS NULL
+                AND EXISTS (
+                  SELECT 1 FROM shipped_records sr
+                  WHERE sr.source_table = '${t}'
+                    AND sr.row_hash = ${t}.row_hash
+                )
+            )::int AS bc_ok_via_ledger
           FROM ${t}
         `);
         const row = r.rows[0];
-        hashHealth.csv_to_db.ok += row.ab_ok;
+        hashHealth.csv_to_db.ok       += row.ab_ok;
         hashHealth.csv_to_db.mismatch += row.ab_mismatch;
-        hashHealth.csv_to_db.pending += row.ab_pending;
-        hashHealth.db_to_hubspot.ok += row.bc_ok;
+        hashHealth.csv_to_db.pending  += row.ab_pending;
+        hashHealth.a_to_b.ok          += row.ab_ok;
+        hashHealth.a_to_b.mismatch    += row.ab_mismatch;
+        hashHealth.a_to_b.pending     += row.ab_pending;
+        const bcOk = row.bc_ok_direct + row.bc_ok_via_ledger;
+        const bcPending = Math.max(0, row.bc_pending_raw - row.bc_ok_via_ledger);
+        hashHealth.db_to_hubspot.ok       += row.bc_ok_direct;
         hashHealth.db_to_hubspot.mismatch += row.bc_mismatch;
-        hashHealth.db_to_hubspot.pending += row.bc_pending;
+        hashHealth.db_to_hubspot.pending  += row.bc_pending_raw;
+        hashHealth.b_to_c.ok       += bcOk;
+        hashHealth.b_to_c.mismatch += row.bc_mismatch;
+        hashHealth.b_to_c.pending  += bcPending;
       } catch { /* table may not exist yet */ }
     }
+    const statusOf = (h) => {
+      if (h.mismatch > 0) return 'mismatch';
+      if (h.pending > 0 || h.ok === 0) return 'pending';
+      return 'ok';
+    };
+    hashHealth.a_to_b.status = statusOf(hashHealth.a_to_b);
+    hashHealth.b_to_c.status = statusOf(hashHealth.b_to_c);
+
+    // Coercion audit — aggregate across staging tables. The diff engine skips
+    // rows whose row_hash is already in shipped_records, which means the
+    // staging row's `coercions` JSONB is empty for rows that were skipped this
+    // run. To surface the audit anyway, when an aggregated table is empty we
+    // fall back to running buildPayload over a sample of its staging rows.
+    const coercionAudit = { by_coerce: {}, samples: [] };
+    for (const src of ISSUES_SOURCES) {
+      const t = src.stagingTable;
+      let r;
+      try {
+        const idCol = (t === 'stg_debit_cards') ? 'composite_key'
+                    : (t === 'stg_contacts' || t === 'stg_companies') ? 'cif_number'
+                    : 'primary_key';
+        r = await pool.query(`
+          SELECT id, ${idCol} AS source_key, coercions
+          FROM ${t}
+          WHERE coercions IS NOT NULL AND jsonb_array_length(coercions) > 0
+          ORDER BY id DESC LIMIT 500
+        `);
+      } catch { continue; }
+      for (const row of r.rows) {
+        const arr = row.coercions || [];
+        for (const c of arr) {
+          const k = c.coerce || 'unknown';
+          if (!coercionAudit.by_coerce[k]) coercionAudit.by_coerce[k] = { count: 0, props: {} };
+          coercionAudit.by_coerce[k].count++;
+          coercionAudit.by_coerce[k].props[c.prop] = (coercionAudit.by_coerce[k].props[c.prop] || 0) + 1;
+          if (coercionAudit.samples.length < 25) {
+            coercionAudit.samples.push({ table: t, source_key: row.source_key, ...c });
+          }
+        }
+      }
+      // Fallback: if this table produced no coercions in JSONB (diff-skip path),
+      // run buildPayload over up to 25 staging rows to synthesize the audit.
+      // The result is computed on demand and doesn't persist anywhere — purely
+      // for surfacing what the transformation WOULD do for an operator.
+      try {
+        const haveAny = r.rows.length > 0;
+        if (!haveAny) {
+          const stagingRows = await pool.query(`SELECT * FROM ${t} LIMIT 25`);
+          for (const row of stagingRows.rows) {
+            const { coercions } = buildPayload(row, src.fields);
+            for (const c of coercions || []) {
+              const k = c.coerce || 'unknown';
+              if (!coercionAudit.by_coerce[k]) coercionAudit.by_coerce[k] = { count: 0, props: {} };
+              coercionAudit.by_coerce[k].count++;
+              coercionAudit.by_coerce[k].props[c.prop] = (coercionAudit.by_coerce[k].props[c.prop] || 0) + 1;
+              if (coercionAudit.samples.length < 25) {
+                coercionAudit.samples.push({
+                  table: t,
+                  source_key: row[src.keyColumn] || null,
+                  ...c,
+                  synthesized: true,
+                });
+              }
+            }
+          }
+        }
+      } catch { /* skip on error */ }
+    }
+
+    // Schema check summary (cached 60s). Per memory hubspot_schema_scope.md,
+    // schema is intentionally aligned — expect 0 mismatches.
+    let schemaCheck;
+    try { schemaCheck = await computeSchemaCheckSummary(); }
+    catch (e) { schemaCheck = { objects: [], summary: { total_matched: 0, total_mismatches: 0, error: describeError(e) } }; }
 
     res.json({
       mapping_issues: mappingIssues.rows,
@@ -667,8 +889,11 @@ app.get('/api/issues', async (req, res) => {
         by_severity: Object.fromEntries(bySeverity.rows.map(r => [r.severity, r.c])),
         by_type:     Object.fromEntries(byType.rows.map(r => [r.error_type, r.c])),
         samples:     samples.rows,
+        per_source_table: perSourceTable,
       },
       hash_health: hashHealth,
+      coercion_audit: coercionAudit,
+      schema_check: schemaCheck,
     });
   } catch (e) {
     const msg = describeError(e);
@@ -676,6 +901,80 @@ app.get('/api/issues', async (req, res) => {
     res.status(500).json({ error: msg });
   }
 });
+
+// -------------------- Dedicated SSE log streams (UAT scenario 6) --------------------
+//
+// /api/logs           — all log events (info/warn/error) from the console hook.
+// /api/logs/hubspot   — only hubspot-tagged events (wire log).
+//
+// Both serve a backlog from the ring buffer on connect (so a late-attached
+// client sees the most recent activity), then subscribe live. We deliberately
+// do NOT patch process.stdout.write here (that broke ssh2; see commit 7c849ed
+// reverted in e2ec281). The ring buffer is fed by installConsoleHook +
+// emitHubspot in src/monitoring/event-stream.js.
+function openLogStream(req, res, { hubspotOnly }) {
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write('retry: 3000\n\n');
+
+  let detached = false;
+  const hubspotMatch = (entry) => {
+    if (entry && entry.tag === 'hubspot') return true;
+    const m = entry && entry.message;
+    if (typeof m !== 'string') return false;
+    return /\/crm\/v|api\.hubapi\.com/.test(m);
+  };
+
+  const sendEntry = (entry) => {
+    if (detached) return;
+    try {
+      res.write(`data: ${JSON.stringify(entry)}\n\n`);
+    } catch (e) {
+      detach();
+    }
+  };
+
+  // Backlog from ring buffer.
+  const backlog = getRingBuffer(hubspotOnly ? hubspotMatch : undefined);
+  for (const entry of backlog) sendEntry(entry);
+
+  // Live: subscribe to 'log'. We also forward hubspot events via the 'log'
+  // path on /api/logs/hubspot — emitHubspot pushes a tagged entry into the
+  // ring buffer with level=info, so the live 'hubspot' event needs a
+  // companion listener to deliver entries that arrived after connect.
+  const onLog = (payload) => {
+    if (hubspotOnly && !hubspotMatch(payload)) return;
+    sendEntry(payload);
+  };
+  const onHubspot = (record) => {
+    if (!hubspotOnly) return; // hubspot events also go through console for /api/logs
+    sendEntry({
+      level: 'info', tag: 'hubspot',
+      message: `[hubspot] ${record.method || ''} ${record.path || ''} ${record.status || ''}`.trim(),
+      at: record.at || new Date().toISOString(),
+      hubspot: record,
+    });
+  };
+  eventStream.on('log', onLog);
+  eventStream.on('hubspot', onHubspot);
+
+  function detach() {
+    if (detached) return;
+    detached = true;
+    eventStream.off('log', onLog);
+    eventStream.off('hubspot', onHubspot);
+  }
+  req.on('close', detach);
+  res.on('error', detach);
+}
+
+app.get('/api/logs', (req, res) => openLogStream(req, res, { hubspotOnly: false }));
+app.get('/api/logs/hubspot', (req, res) => openLogStream(req, res, { hubspotOnly: true }));
 
 // Coercion audit — every transformation recorded on the staging row.
 // Per Q5 / memory rule 3: every coercion is auditable. This endpoint
@@ -720,6 +1019,7 @@ app.get('/api/coercions', async (req, res) => {
 // Start SFTP server if configured
 startSftpServer({
   incomingDir: INCOMING_DIR,
+  quarantineDir: QUARANTINE_DIR,
   onFileReceived: (filePath) => {
     console.log(`SFTP file received: ${path.basename(filePath)}`);
   },

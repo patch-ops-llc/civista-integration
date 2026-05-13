@@ -32,6 +32,7 @@ function startSftpServer(options = {}) {
   const {
     port = parseInt(process.env.SFTP_PORT || '2222', 10),
     incomingDir = path.join(__dirname, '../../incoming'),
+    quarantineDir = process.env.QUARANTINE_DIR || path.join(__dirname, '../../quarantine'),
     onFileReceived,
   } = options;
 
@@ -68,6 +69,7 @@ function startSftpServer(options = {}) {
   }
 
   fs.mkdirSync(incomingDir, { recursive: true });
+  fs.mkdirSync(quarantineDir, { recursive: true });
 
   const hostKey = key.buffer;
   const allowedUser = process.env.SFTP_USER || 'civista';
@@ -291,24 +293,73 @@ function startSftpServer(options = {}) {
           // client can't escape to /etc/passwd or similar.
 
           const DIR_HANDLE = 'dir';  // sentinel for OPENDIR/READDIR
-          const dirCursors = new Map();  // handle.toString('hex') → next index
+          const dirCursors = new Map();  // handle.toString('hex') → dir abs path
 
+          // Map a client-requested path to a real filesystem location.
+          // Two virtual roots are exposed:
+          //   /incoming   → incomingDir   (default; what clients see at "/")
+          //   /quarantine → quarantineDir (UAT scenario 10: operators must be
+          //                                able to inspect quarantined files)
+          // Everything else collapses to incomingDir for backward compat with
+          // existing programmatic clients that just PUT to "/".
+          function resolveDir(input) {
+            const raw = String(input || '').trim();
+            const norm = raw.replace(/\\/g, '/').replace(/\/+$/, '');
+            // Recognize both "/quarantine" and "quarantine" (after cd quarantine).
+            if (norm === '/quarantine' || norm === 'quarantine' || norm === quarantineDir) {
+              return quarantineDir;
+            }
+            if (norm === '/incoming' || norm === 'incoming' || norm === incomingDir) {
+              return incomingDir;
+            }
+            return incomingDir; // default root
+          }
+          function isDirRequest(input) {
+            const raw = String(input || '').trim();
+            if (raw === '' || raw === '.' || raw === '/') return true;
+            const norm = raw.replace(/\\/g, '/').replace(/\/+$/, '');
+            if (norm === '/quarantine' || norm === 'quarantine') return true;
+            if (norm === '/incoming' || norm === 'incoming') return true;
+            if (norm === incomingDir || norm === quarantineDir) return true;
+            return false;
+          }
+          // Resolve a path that may be a file inside one of the two roots.
           function safePath(input) {
-            // Reject anything that tries to escape the incoming dir.
-            // basename strips any ../foo or absolute-path injection.
-            const base = path.basename(String(input || ''));
+            const raw = String(input || '');
+            const norm = raw.replace(/\\/g, '/');
+            // /quarantine/<file>
+            if (norm.startsWith('/quarantine/') || norm.startsWith('quarantine/')) {
+              const base = path.basename(norm);
+              return path.join(quarantineDir, base);
+            }
+            // /incoming/<file> (or any bare basename — default root)
+            const base = path.basename(norm);
             return path.join(incomingDir, base);
           }
 
           // REALPATH: clients ask for canonical absolute path of "." or other
-          // relative refs. We always anchor to incomingDir.
+          // relative refs. We resolve "." / "/" → /incoming (default working
+          // dir), and "/quarantine" → the quarantine root.
           sftp.on('REALPATH', (reqid, p) => {
-            // For "." or empty, return incomingDir itself.
-            // For a filename, return incomingDir/filename.
             const requested = String(p || '.');
-            const resolved = (requested === '.' || requested === '/' || requested === '')
-              ? incomingDir
-              : safePath(requested);
+            let resolved;
+            if (requested === '.' || requested === '/' || requested === '') {
+              resolved = '/incoming';
+            } else if (isDirRequest(requested)) {
+              const dir = resolveDir(requested);
+              resolved = (dir === quarantineDir) ? '/quarantine' : '/incoming';
+            } else {
+              // File path — preserve the virtual prefix the client used.
+              const norm = requested.replace(/\\/g, '/');
+              const base = path.basename(norm);
+              if (norm.startsWith('/quarantine/') || norm.startsWith('quarantine/')) {
+                resolved = '/quarantine/' + base;
+              } else if (norm.startsWith('/incoming/') || norm.startsWith('incoming/')) {
+                resolved = '/incoming/' + base;
+              } else {
+                resolved = '/incoming/' + base;
+              }
+            }
             sftp.name(reqid, [{ filename: resolved, longname: resolved, attrs: {} }]);
           });
 
@@ -316,11 +367,7 @@ function startSftpServer(options = {}) {
           // that check whether a file already exists before overwriting.
           const statHandler = (reqid, p) => {
             try {
-              // If the input is incomingDir itself, stat that. Otherwise
-              // resolve as a file within incomingDir.
-              const target = (p === incomingDir || p === '.' || p === '/' || p === '')
-                ? incomingDir
-                : safePath(p);
+              const target = isDirRequest(p) ? resolveDir(p) : safePath(p);
               const st = fs.statSync(target);
               sftp.attrs(reqid, {
                 mode: st.mode,
@@ -365,13 +412,15 @@ function startSftpServer(options = {}) {
           sftp.on('SETSTAT', (reqid) => sftp.status(reqid, STATUS_CODE.OK));
           sftp.on('FSETSTAT', (reqid) => sftp.status(reqid, STATUS_CODE.OK));
 
-          // OPENDIR: client wants to list a directory. We only have one;
-          // hand back a sentinel handle and reset the read cursor.
-          sftp.on('OPENDIR', (reqid /*, p */) => {
+          // OPENDIR: client wants to list a directory. Record which root they
+          // asked for so READDIR can list the right files.
+          let dirHandleCounter = 0xD17EC70F;
+          sftp.on('OPENDIR', (reqid, p) => {
+            const targetDir = resolveDir(p);
             const handle = Buffer.alloc(4);
-            handle.writeUInt32BE(0xD17EC70F);  // DIR-ish sentinel
+            handle.writeUInt32BE((dirHandleCounter++) >>> 0);
             const key = handle.toString('hex');
-            dirCursors.set(key, 0);
+            dirCursors.set(key, { cursor: 0, dir: targetDir });
             sftp.handle(reqid, handle);
           });
 
@@ -379,21 +428,23 @@ function startSftpServer(options = {}) {
           // call, then EOF on the second to terminate the client's loop.
           sftp.on('READDIR', (reqid, handle) => {
             const key = handle.toString('hex');
-            const cursor = dirCursors.get(key);
-            if (cursor === undefined) return sftp.status(reqid, STATUS_CODE.FAILURE);
-            if (cursor > 0) return sftp.status(reqid, STATUS_CODE.EOF);
+            const state = dirCursors.get(key);
+            if (state === undefined) return sftp.status(reqid, STATUS_CODE.FAILURE);
+            if (state.cursor > 0) return sftp.status(reqid, STATUS_CODE.EOF);
+            const listDir = state.dir || incomingDir;
             let entries;
             try {
-              entries = fs.readdirSync(incomingDir).map((name) => {
-                const full = path.join(incomingDir, name);
+              entries = fs.readdirSync(listDir).map((name) => {
+                const full = path.join(listDir, name);
                 let st;
                 try { st = fs.statSync(full); } catch { st = { mode: 0, size: 0, atimeMs: 0, mtimeMs: 0 }; }
-                const longname = `${st.isDirectory && st.isDirectory() ? 'd' : '-'}rw-r--r-- 1 owner owner ${String(st.size).padStart(10)} ${new Date(st.mtimeMs).toISOString().slice(0, 16).replace('T', ' ')} ${name}`;
+                const isDir = !!(st.isDirectory && st.isDirectory());
+                const longname = `${isDir ? 'd' : '-'}rw-r--r-- 1 owner owner ${String(st.size).padStart(10)} ${new Date(st.mtimeMs).toISOString().slice(0, 16).replace('T', ' ')} ${name}`;
                 return {
                   filename: name,
                   longname,
                   attrs: {
-                    mode: st.mode || 0o100644,
+                    mode: st.mode || (isDir ? 0o040755 : 0o100644),
                     uid: 0, gid: 0,
                     size: st.size || 0,
                     atime: Math.floor((st.atimeMs || 0) / 1000),
@@ -404,7 +455,7 @@ function startSftpServer(options = {}) {
             } catch (e) {
               return sftp.status(reqid, STATUS_CODE.FAILURE);
             }
-            dirCursors.set(key, 1);
+            state.cursor = 1;
             sftp.name(reqid, entries);
           });
 

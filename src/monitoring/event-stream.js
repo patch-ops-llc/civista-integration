@@ -8,6 +8,12 @@
  *   eventStream.emit('log', { level: 'info', message: 'hello' });
  *
  * SSE handler in index.js subscribes: eventStream.on('log', sendToClient).
+ *
+ * Ring buffer: in addition to live emission, every event is pushed into a
+ * fixed-capacity ring buffer so a late-connecting SSE client (UAT scenario 6)
+ * can receive a backlog on connect. Capacity 1000 keeps memory bounded
+ * (~1000 * a few hundred bytes ≈ <1MB) and is more than enough for ~30s of
+ * tail at typical sync rates.
  */
 
 const { EventEmitter } = require('events');
@@ -15,6 +21,20 @@ const { EventEmitter } = require('events');
 const eventStream = new EventEmitter();
 // Allow many concurrent browser tabs subscribing without warnings.
 eventStream.setMaxListeners(100);
+
+const RING_CAPACITY = 1000;
+const ringBuffer = [];
+
+function pushRing(entry) {
+  ringBuffer.push(entry);
+  if (ringBuffer.length > RING_CAPACITY) ringBuffer.shift();
+}
+
+/** Snapshot of the ring buffer for backlog delivery on SSE connect. */
+function getRingBuffer(filter) {
+  if (typeof filter !== 'function') return ringBuffer.slice();
+  return ringBuffer.filter(filter);
+}
 
 let hooked = false;
 
@@ -31,7 +51,9 @@ function installConsoleHook() {
       if (typeof a === 'string') return a;
       try { return JSON.stringify(a); } catch { return String(a); }
     }).join(' ');
-    eventStream.emit('log', { level, message: msg, at: new Date().toISOString() });
+    const entry = { level, message: msg, at: new Date().toISOString() };
+    pushRing(entry);
+    eventStream.emit('log', entry);
   };
 
   console.log   = (...a) => { origLog(...a);   emit('info', a); };
@@ -48,13 +70,24 @@ function installConsoleHook() {
  * Gated by `ENABLE_WIRE_LOG=1`. On a 700k-row sync that's ~14k events; we
  * default OFF in prod so we don't pay the per-record fanout overhead
  * unless someone has explicitly opted in.
+ *
+ * Also pushed into the ring buffer (tagged hubspot) so /api/logs/hubspot
+ * can serve backlog to late-connecting SSE clients.
  */
 function emitHubspot(record) {
   if (process.env.ENABLE_WIRE_LOG !== '1') return;
-  eventStream.emit('hubspot', {
+  const enriched = {
     at: new Date().toISOString(),
     ...record,
+  };
+  pushRing({
+    level: 'info',
+    tag: 'hubspot',
+    message: `[hubspot] ${record.method || ''} ${record.path || ''} ${record.status || ''}`.trim(),
+    at: enriched.at,
+    hubspot: enriched,
   });
+  eventStream.emit('hubspot', enriched);
 }
 
-module.exports = { eventStream, installConsoleHook, emitHubspot };
+module.exports = { eventStream, installConsoleHook, emitHubspot, getRingBuffer };
