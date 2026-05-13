@@ -76,25 +76,41 @@ function startSftpServer(options = {}) {
   const server = new Server({ hostKeys: [hostKey] }, (client) => {
     console.log('SFTP client connected');
 
+    // Auth: accept both 'password' (programmatic clients like ssh2-sftp-client
+    // and OpenSSH) and 'keyboard-interactive' (Cyberduck, FileZilla, and most
+    // modern GUI SFTP clients default to this; they often refuse to fall back
+    // to plain password if it's not advertised). Both methods are functionally
+    // password auth — keyboard-interactive just wraps it in a prompt round-trip.
+    // Public key auth is intentionally not offered.
+    const ADVERTISED = ['password', 'keyboard-interactive'];
+    const rejectWithLog = (ctx) => {
+      ctx.reject(ADVERTISED);
+      loud.warn({
+        event: 'sftp_auth_rejected',
+        message: `SFTP auth rejected for user=${ctx.username}`,
+        context: { username: ctx.username, method: ctx.method },
+      }).catch(() => {});
+    };
+
     client.on('authentication', (ctx) => {
-      // SSH clients first probe with method='none' to ask what auth methods
-      // are supported. We only support password; tell the client that so it
-      // knows to send the password next.
-      if (ctx.method !== 'password') {
-        return ctx.reject(['password']);
+      if (ctx.method === 'password') {
+        if (ctx.username === allowedUser && ctx.password === allowedPass) return ctx.accept();
+        return rejectWithLog(ctx);
       }
-      if (ctx.username === allowedUser && ctx.password === allowedPass) {
-        ctx.accept();
-      } else {
-        // Reject the auth synchronously, then loud.warn (don't await — keeps
-        // the SSH handshake responsive). loud.warn handles its own errors.
-        ctx.reject(['password']);
-        loud.warn({
-          event: 'sftp_auth_rejected',
-          message: `SFTP auth rejected for user=${ctx.username}`,
-          context: { username: ctx.username, method: ctx.method },
-        }).catch(() => {});
+      if (ctx.method === 'keyboard-interactive') {
+        // Send a single password prompt. The client renders it and sends the
+        // typed response back as responses[0]. Validate identically to the
+        // password method.
+        return ctx.prompt([{ prompt: 'Password: ', echo: false }], (responses) => {
+          if (ctx.username === allowedUser && responses && responses[0] === allowedPass) {
+            return ctx.accept();
+          }
+          rejectWithLog(ctx);
+        });
       }
+      // 'none' probe or unsupported method (publickey, hostbased): tell the
+      // client what we support so it can retry with the right method.
+      ctx.reject(ADVERTISED);
     });
 
     client.on('ready', () => {
