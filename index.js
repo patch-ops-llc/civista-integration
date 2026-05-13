@@ -74,6 +74,11 @@ const TMP_UPLOAD_DIR = path.join(os.tmpdir(), 'civista_browser_uploads');
 fs.mkdirSync(TMP_UPLOAD_DIR, { recursive: true });
 const upload = multer({ dest: TMP_UPLOAD_DIR });
 
+// Strip Express's default response headers — UAT Scenario 1 requires
+// no x-powered-by and no etag in any response.
+app.disable('x-powered-by');
+app.disable('etag');
+
 app.use(express.json());
 
 // HTTP Basic Auth gate — without WWW-Authenticate header.
@@ -97,16 +102,15 @@ const EXPECTED_PASS_DIGEST = digestForCompare(process.env.SFTP_PASS || '');
 const HAS_AUTH_CREDS = !!(process.env.SFTP_USER && process.env.SFTP_PASS);
 
 app.use((req, res, next) => {
-  // /health is the only unauthenticated route — Railway's healthcheck hits
-  // it. Its response is already stripped to {status, database} only.
-  if (req.path === '/health') return next();
+  // Every route requires auth, including /health. Railway no longer probes
+  // /health via HTTP — healthcheckPath was dropped from railway.toml so
+  // Railway falls back to container liveness.
   if (!HAS_AUTH_CREDS) {
-    return res.status(503).type('text/plain').send('Service auth misconfigured (SFTP_USER/SFTP_PASS env not set)');
+    return res.status(503).type('text/plain').send('Auth required\n');
   }
   const header = req.get('Authorization') || '';
   if (!header.startsWith('Basic ')) {
-    // No WWW-Authenticate header on this 401 — see comment block above.
-    return res.status(401).type('text/plain').send('Authentication required. Use: curl -u "<SFTP_USER>:<SFTP_PASS>" ...\n');
+    return res.status(401).type('text/plain').send('Auth required\n');
   }
   let user = '', pass = '';
   try {
@@ -125,7 +129,7 @@ app.use((req, res, next) => {
       message: `API auth rejected for user="${user.slice(0, 24)}"`,
       context: { ip: req.ip || req.socket.remoteAddress, path: req.path },
     }).catch(() => {});
-    return res.status(401).type('text/plain').send('Invalid credentials\n');
+    return res.status(401).type('text/plain').send('Auth required\n');
   }
   next();
 });
