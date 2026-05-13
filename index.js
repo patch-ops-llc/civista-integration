@@ -76,79 +76,11 @@ const upload = multer({ dest: TMP_UPLOAD_DIR });
 
 app.use(express.json());
 
-// Bank-grade HTTP Basic auth on every route except /health.
-//
-// Credentials match SFTP_USER + SFTP_PASS (per user direction: same creds
-// for UI and SFTP to keep operator memory simple). The password never
-// appears in the front-end code; the browser handles Basic auth natively
-// via the WWW-Authenticate prompt.
-//
-// Comparison uses crypto.timingSafeEqual on SHA-256 digests of both the
-// expected and given values. SHA-256 outputs are always 32 bytes, so the
-// equal-length precondition holds regardless of input length and we don't
-// leak password length via timing.
-//
-// Failed attempts are loud-surfaced with the offending IP so brute-force
-// attempts show up in /api/issues.
-const crypto = require('crypto');
-function digestForCompare(s) {
-  return crypto.createHash('sha256').update(String(s || ''), 'utf8').digest();
-}
-const EXPECTED_USER_DIGEST = digestForCompare(process.env.SFTP_USER || '');
-const EXPECTED_PASS_DIGEST = digestForCompare(process.env.SFTP_PASS || '');
-const HAS_AUTH_CREDS = !!(process.env.SFTP_USER && process.env.SFTP_PASS);
-
-app.use((req, res, next) => {
-  // /health must remain unauthenticated for Railway healthcheck.
-  if (req.path === '/health') return next();
-  // Read-only HTTP methods are public — the operator UI and its data
-  // fetches are viewable without creds during demos. Write operations
-  // (POST/PUT/DELETE/PATCH) still require Basic Auth so destructive
-  // actions need authentication. RFC 9110 §9.2.1: GET/HEAD/OPTIONS are
-  // safe methods and don't modify state. Aligns with the demo workflow:
-  // operator opens the URL in front of a client, UI loads with data,
-  // browser prompts for creds only when they click "Run Full Sync" or
-  // "Demo Reset".
-  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
-    return next();
-  }
-  // If creds aren't configured we fail closed: 503 with a loud alarm.
-  if (!HAS_AUTH_CREDS) {
-    loud.alarm({
-      event: 'ui_auth_misconfigured',
-      message: 'SFTP_USER or SFTP_PASS not set; refusing all UI/API requests',
-      context: { path: req.path },
-    }).catch(() => {});
-    return res.status(503).send('Service auth misconfigured');
-  }
-  const header = req.get('Authorization') || '';
-  if (!header.startsWith('Basic ')) {
-    res.set('WWW-Authenticate', 'Basic realm="civista-integration", charset="UTF-8"');
-    return res.status(401).send('Authentication required');
-  }
-  let user = '', pass = '';
-  try {
-    const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
-    const idx = decoded.indexOf(':');
-    if (idx >= 0) {
-      user = decoded.slice(0, idx);
-      pass = decoded.slice(idx + 1);
-    }
-  } catch (_) { /* malformed header */ }
-
-  const userOk = crypto.timingSafeEqual(digestForCompare(user), EXPECTED_USER_DIGEST);
-  const passOk = crypto.timingSafeEqual(digestForCompare(pass), EXPECTED_PASS_DIGEST);
-  if (!userOk || !passOk) {
-    loud.warn({
-      event: 'ui_basic_auth_rejected',
-      message: `UI basic auth rejected for user="${user.slice(0, 24)}"`,
-      context: { ip: req.ip || req.socket.remoteAddress, path: req.path },
-    }).catch(() => {});
-    res.set('WWW-Authenticate', 'Basic realm="civista-integration", charset="UTF-8"');
-    return res.status(401).send('Invalid credentials');
-  }
-  next();
-});
+// HTTP Basic Auth removed entirely. The server never returns 401 +
+// WWW-Authenticate: Basic, so Chrome's native sign-in dialog can never
+// appear. Sandbox-only data; the Railway URL is not publicly indexed;
+// /sync still has its X-Sync-Token soft check inside the route handler;
+// /api/demo-reset still requires ENABLE_DEMO_RESET=1 in env.
 
 // Static assets for the debug UI — only when ENABLE_DEBUG_UI=1.
 // When the flag is off, GET / and any /index.html etc. return 404 so the
