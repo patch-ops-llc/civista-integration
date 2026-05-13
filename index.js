@@ -101,6 +101,12 @@ const HAS_AUTH_CREDS = !!(process.env.SFTP_USER && process.env.SFTP_PASS);
 app.use((req, res, next) => {
   // /health must remain unauthenticated for Railway healthcheck.
   if (req.path === '/health') return next();
+  // /api/sftp-auth is non-destructive — it tests SFTP creds against our
+  // own SFTP server (which validates them anyway). The browser prompted
+  // for Basic Auth on the UI's "Connect" button before this exemption,
+  // even though the user had just typed SFTP creds into the form. Skip
+  // the global Basic Auth here so the SFTP check flow doesn't double-prompt.
+  if (req.path === '/api/sftp-auth') return next();
   // Read-only HTTP methods are public — the operator UI and its data
   // fetches are viewable without creds during demos. Write operations
   // (POST/PUT/DELETE/PATCH) still require Basic Auth so destructive
