@@ -2,7 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { Server } = require('ssh2');
+const { Server, utils: { sftp: { STATUS_CODE } } } = require('ssh2');
 const loud = require('../monitoring/loud');
 const { drawBox } = require('../monitoring/box');
 
@@ -223,6 +223,174 @@ function startSftpServer(options = {}) {
               }
               sftp.status(reqid, 0);
             });
+          });
+
+          // The minimal upload-only SFTP server above (OPEN/WRITE/CLOSE) is
+          // sufficient for programmatic clients like ssh2-sftp-client. But
+          // interactive clients (Cyberduck, FileZilla, OpenSSH `sftp` CLI,
+          // MOVEit Automation) probe the working directory with REALPATH /
+          // OPENDIR / READDIR / STAT on connect and refuse to proceed if
+          // those return "Operation unsupported."
+          //
+          // The handlers below implement those operations while keeping the
+          // server scoped to incomingDir — every path is normalized to its
+          // basename within incomingDir (path traversal is rejected) so a
+          // client can't escape to /etc/passwd or similar.
+
+          const DIR_HANDLE = 'dir';  // sentinel for OPENDIR/READDIR
+          const dirCursors = new Map();  // handle.toString('hex') → next index
+
+          function safePath(input) {
+            // Reject anything that tries to escape the incoming dir.
+            // basename strips any ../foo or absolute-path injection.
+            const base = path.basename(String(input || ''));
+            return path.join(incomingDir, base);
+          }
+
+          // REALPATH: clients ask for canonical absolute path of "." or other
+          // relative refs. We always anchor to incomingDir.
+          sftp.on('REALPATH', (reqid, p) => {
+            // For "." or empty, return incomingDir itself.
+            // For a filename, return incomingDir/filename.
+            const requested = String(p || '.');
+            const resolved = (requested === '.' || requested === '/' || requested === '')
+              ? incomingDir
+              : safePath(requested);
+            sftp.name(reqid, [{ filename: resolved, longname: resolved, attrs: {} }]);
+          });
+
+          // STAT / LSTAT: file metadata. Required for `ls -l` and for clients
+          // that check whether a file already exists before overwriting.
+          const statHandler = (reqid, p) => {
+            try {
+              // If the input is incomingDir itself, stat that. Otherwise
+              // resolve as a file within incomingDir.
+              const target = (p === incomingDir || p === '.' || p === '/' || p === '')
+                ? incomingDir
+                : safePath(p);
+              const st = fs.statSync(target);
+              sftp.attrs(reqid, {
+                mode: st.mode,
+                uid: st.uid,
+                gid: st.gid,
+                size: st.size,
+                atime: Math.floor(st.atimeMs / 1000),
+                mtime: Math.floor(st.mtimeMs / 1000),
+              });
+            } catch (e) {
+              sftp.status(
+                reqid,
+                e.code === 'ENOENT' ? STATUS_CODE.NO_SUCH_FILE : STATUS_CODE.FAILURE,
+              );
+            }
+          };
+          sftp.on('STAT', statHandler);
+          sftp.on('LSTAT', statHandler);
+
+          // FSTAT: stat by open file handle (rare but Cyberduck sometimes uses it
+          // on the destination after WRITE to confirm size).
+          sftp.on('FSTAT', (reqid, handle) => {
+            const file = openFiles.get(handle.toString('hex'));
+            if (!file) return sftp.status(reqid, STATUS_CODE.FAILURE);
+            try {
+              const st = fs.statSync(file.path);
+              sftp.attrs(reqid, {
+                mode: st.mode, uid: st.uid, gid: st.gid, size: st.size,
+                atime: Math.floor(st.atimeMs / 1000),
+                mtime: Math.floor(st.mtimeMs / 1000),
+              });
+            } catch (e) {
+              sftp.status(reqid, STATUS_CODE.FAILURE);
+            }
+          });
+
+          // SETSTAT / FSETSTAT: clients send chmod/chown/utime after upload.
+          // We don't honor permission changes (the file is owned by the
+          // container's user) but acknowledging keeps clients happy.
+          sftp.on('SETSTAT', (reqid) => sftp.status(reqid, STATUS_CODE.OK));
+          sftp.on('FSETSTAT', (reqid) => sftp.status(reqid, STATUS_CODE.OK));
+
+          // OPENDIR: client wants to list a directory. We only have one;
+          // hand back a sentinel handle and reset the read cursor.
+          sftp.on('OPENDIR', (reqid /*, p */) => {
+            const handle = Buffer.alloc(4);
+            handle.writeUInt32BE(0xD17EC70F);  // DIR-ish sentinel
+            const key = handle.toString('hex');
+            dirCursors.set(key, 0);
+            sftp.handle(reqid, handle);
+          });
+
+          // READDIR: paginated dir listing. Return all entries on the first
+          // call, then EOF on the second to terminate the client's loop.
+          sftp.on('READDIR', (reqid, handle) => {
+            const key = handle.toString('hex');
+            const cursor = dirCursors.get(key);
+            if (cursor === undefined) return sftp.status(reqid, STATUS_CODE.FAILURE);
+            if (cursor > 0) return sftp.status(reqid, STATUS_CODE.EOF);
+            let entries;
+            try {
+              entries = fs.readdirSync(incomingDir).map((name) => {
+                const full = path.join(incomingDir, name);
+                let st;
+                try { st = fs.statSync(full); } catch { st = { mode: 0, size: 0, atimeMs: 0, mtimeMs: 0 }; }
+                const longname = `${st.isDirectory && st.isDirectory() ? 'd' : '-'}rw-r--r-- 1 owner owner ${String(st.size).padStart(10)} ${new Date(st.mtimeMs).toISOString().slice(0, 16).replace('T', ' ')} ${name}`;
+                return {
+                  filename: name,
+                  longname,
+                  attrs: {
+                    mode: st.mode || 0o100644,
+                    uid: 0, gid: 0,
+                    size: st.size || 0,
+                    atime: Math.floor((st.atimeMs || 0) / 1000),
+                    mtime: Math.floor((st.mtimeMs || 0) / 1000),
+                  },
+                };
+              });
+            } catch (e) {
+              return sftp.status(reqid, STATUS_CODE.FAILURE);
+            }
+            dirCursors.set(key, 1);
+            sftp.name(reqid, entries);
+          });
+
+          // CLOSE on a dir handle — we share the CLOSE handler above by
+          // first checking if it's a dir cursor.
+          const origCloseHandler = sftp.listeners('CLOSE')[0];
+          sftp.removeAllListeners('CLOSE');
+          sftp.on('CLOSE', (reqid, handle) => {
+            const key = handle.toString('hex');
+            if (dirCursors.has(key)) {
+              dirCursors.delete(key);
+              return sftp.status(reqid, STATUS_CODE.OK);
+            }
+            return origCloseHandler(reqid, handle);
+          });
+
+          // MKDIR / RMDIR: no-op success — we have one fixed dir, clients
+          // sometimes try to create or remove paths during sync.
+          sftp.on('MKDIR', (reqid) => sftp.status(reqid, STATUS_CODE.OK));
+          sftp.on('RMDIR', (reqid) => sftp.status(reqid, STATUS_CODE.OK));
+
+          // REMOVE: allow deleting a file in incomingDir (operator may
+          // want to clear a stale drop before re-uploading).
+          sftp.on('REMOVE', (reqid, p) => {
+            try {
+              fs.unlinkSync(safePath(p));
+              sftp.status(reqid, STATUS_CODE.OK);
+            } catch (e) {
+              sftp.status(reqid, e.code === 'ENOENT' ? STATUS_CODE.NO_SUCH_FILE : STATUS_CODE.FAILURE);
+            }
+          });
+
+          // RENAME: useful for clients that upload to a .tmp name then rename
+          // atomically to the final name once the bytes are flushed.
+          sftp.on('RENAME', (reqid, oldPath, newPath) => {
+            try {
+              fs.renameSync(safePath(oldPath), safePath(newPath));
+              sftp.status(reqid, STATUS_CODE.OK);
+            } catch (e) {
+              sftp.status(reqid, e.code === 'ENOENT' ? STATUS_CODE.NO_SUCH_FILE : STATUS_CODE.FAILURE);
+            }
           });
         });
       });
