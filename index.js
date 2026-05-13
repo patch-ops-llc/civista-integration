@@ -679,7 +679,12 @@ async function computeSchemaCheckSummary() {
       if (p.hubspotDefined) continue;
       if (!pgColSet.has(p.name)) missingInPg++;
     }
-    const status = (missingInHs === 0 && missingInPg === 0 && errors.length === 0) ? 'ok' : 'mismatch';
+    // missingInPg = HubSpot has properties we don't populate (intentional gap;
+    // per memory hubspot_schema_scope.md, adding new properties is out of scope).
+    // Only missingInHs (a PG column with no matching HS property) is a real
+    // mismatch — that's the case where we'd be trying to write to a property
+    // that doesn't exist in HubSpot.
+    const status = (missingInHs === 0 && errors.length === 0) ? 'ok' : 'mismatch';
     if (status === 'mismatch') totalMismatches++;
     totalMatched += matched;
     objects.push({ label: o.label, matched, missingInHs, missingInPg, status, errors });
