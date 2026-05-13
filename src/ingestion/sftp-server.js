@@ -2,7 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { Server, utils: { sftp: { STATUS_CODE } } } = require('ssh2');
+const { Server, utils: { sftp: { STATUS_CODE, OPEN_MODE } } } = require('ssh2');
 const loud = require('../monitoring/loud');
 const { drawBox } = require('../monitoring/box');
 
@@ -125,15 +125,40 @@ function startSftpServer(options = {}) {
           let handleCount = 0;
 
           sftp.on('OPEN', (reqid, filename, flags) => {
-            const handle = Buffer.alloc(4);
             const filePath = path.join(incomingDir, path.basename(filename));
+            const handle = Buffer.alloc(4);
             handle.writeUInt32BE(handleCount++);
+            const key = handle.toString('hex');
+
+            // Honor the open mode. Cyberduck verifies uploads by re-opening
+            // the file in READ mode after CLOSE; if we always created a write
+            // stream we'd truncate the just-uploaded file and then have no
+            // READ handler to serve the verification, which Cyberduck reports
+            // as "Broken transport; encountered EOF."
+            const isWrite = !!(flags & (OPEN_MODE.WRITE | OPEN_MODE.APPEND | OPEN_MODE.CREAT | OPEN_MODE.TRUNC));
+            const isRead = !!(flags & OPEN_MODE.READ);
+
+            if (isRead && !isWrite) {
+              // Read-only open: serve bytes from the file. We don't actually
+              // open a fs stream here — READ requests give us offset+length
+              // so we use a per-handle file descriptor.
+              try {
+                const fd = fs.openSync(filePath, 'r');
+                const stat = fs.fstatSync(fd);
+                openFiles.set(key, { kind: 'read', path: filePath, fd, size: stat.size });
+                return sftp.handle(reqid, handle);
+              } catch (e) {
+                return sftp.status(reqid, e.code === 'ENOENT' ? STATUS_CODE.NO_SUCH_FILE : STATUS_CODE.FAILURE);
+              }
+            }
+
+            // Write path (existing behavior).
             const stream = fs.createWriteStream(filePath);
             // pendingCallbacks holds write callbacks awaiting the stream's
             // 'drain' event when backpressure was triggered, so a stream
             // error can fail every still-pending WRITE rather than letting
             // some get OK'd while others are stuck.
-            const entry = { path: filePath, stream, writeError: null, pending: [] };
+            const entry = { kind: 'write', path: filePath, stream, writeError: null, pending: [] };
             stream.on('error', (err) => {
               entry.writeError = err;
               // Fail every callback that hasn't been resolved yet.
@@ -147,8 +172,29 @@ function startSftpServer(options = {}) {
                 context: { path: filePath, code: err.code },
               }).catch(() => {});
             });
-            openFiles.set(handle.toString('hex'), entry);
+            openFiles.set(key, entry);
             sftp.handle(reqid, handle);
+          });
+
+          // READ: serve bytes from a read-mode handle. ssh2 calls this with
+          // (reqid, handle, offset, length). We respond with sftp.data() on
+          // success or sftp.status() with EOF when offset >= size.
+          sftp.on('READ', (reqid, handle, offset, length) => {
+            const entry = openFiles.get(handle.toString('hex'));
+            if (!entry || entry.kind !== 'read') {
+              return sftp.status(reqid, STATUS_CODE.FAILURE);
+            }
+            if (offset >= entry.size) {
+              return sftp.status(reqid, STATUS_CODE.EOF);
+            }
+            const toRead = Math.min(length, entry.size - offset);
+            const buf = Buffer.alloc(toRead);
+            try {
+              fs.readSync(entry.fd, buf, 0, toRead, offset);
+              sftp.data(reqid, buf);
+            } catch (e) {
+              sftp.status(reqid, STATUS_CODE.FAILURE);
+            }
           });
 
           sftp.on('WRITE', (reqid, handle, offset, data) => {
@@ -187,6 +233,13 @@ function startSftpServer(options = {}) {
             const key = handle.toString('hex');
             const file = openFiles.get(key);
             if (!file) {
+              sftp.status(reqid, 0);
+              return;
+            }
+            // Read-mode handle: just close the fd. No flush required.
+            if (file.kind === 'read') {
+              try { fs.closeSync(file.fd); } catch { /* already closed */ }
+              openFiles.delete(key);
               sftp.status(reqid, 0);
               return;
             }
@@ -287,13 +340,15 @@ function startSftpServer(options = {}) {
           sftp.on('STAT', statHandler);
           sftp.on('LSTAT', statHandler);
 
-          // FSTAT: stat by open file handle (rare but Cyberduck sometimes uses it
-          // on the destination after WRITE to confirm size).
+          // FSTAT: stat by open file handle. Cyberduck uses this after OPEN-
+          // for-read to learn the size before issuing READ requests.
           sftp.on('FSTAT', (reqid, handle) => {
             const file = openFiles.get(handle.toString('hex'));
             if (!file) return sftp.status(reqid, STATUS_CODE.FAILURE);
             try {
-              const st = fs.statSync(file.path);
+              const st = file.kind === 'read'
+                ? fs.fstatSync(file.fd)
+                : fs.statSync(file.path);
               sftp.attrs(reqid, {
                 mode: st.mode, uid: st.uid, gid: st.gid, size: st.size,
                 atime: Math.floor(st.atimeMs / 1000),
