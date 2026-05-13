@@ -107,6 +107,11 @@ app.use((req, res, next) => {
   // even though the user had just typed SFTP creds into the form. Skip
   // the global Basic Auth here so the SFTP check flow doesn't double-prompt.
   if (req.path === '/api/sftp-auth') return next();
+  // /api/demo-reset is destructive but only available when the operator
+  // sets ENABLE_DEMO_RESET=1 — that env var IS the access control. The
+  // browser prompt during demos is awkward; the env-flag gate is the
+  // safety boundary, not Basic Auth.
+  if (req.path === '/api/demo-reset') return next();
   // Read-only HTTP methods are public — the operator UI and its data
   // fetches are viewable without creds during demos. Write operations
   // (POST/PUT/DELETE/PATCH) still require Basic Auth so destructive
