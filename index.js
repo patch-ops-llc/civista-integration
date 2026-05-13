@@ -342,15 +342,23 @@ app.post('/admin/reset-sandbox', async (req, res) => {
       }
     }
 
-    try {
-      const s2 = await fetch(`https://api.hubapi.com/crm/v3/objects/${obj}/search`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ limit: 1 }),
-      });
-      const b2 = await s2.json().catch(() => ({}));
-      after = b2.total ?? null;
-    } catch (e) { /* leave after=null */ }
+    // HubSpot's search index lags archives by ~5-10s — poll up to 30s so the
+    // "after" we report reflects reality, not the stale index. Bail early as
+    // soon as we see 0.
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      try {
+        const s2 = await fetch(`https://api.hubapi.com/crm/v3/objects/${obj}/search`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ limit: 1 }),
+        });
+        const b2 = await s2.json().catch(() => ({}));
+        after = b2.total ?? null;
+      } catch (e) { after = null; }
+      if (after === 0) break;
+      await new Promise(r => setTimeout(r, 2000));
+    }
 
     hsSummary[label] = { obj, before, after };
   }
