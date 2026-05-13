@@ -1,3 +1,10 @@
+// Install stdout/stderr mirror to /tmp/civista.log BEFORE anything else
+// emits. Operator can `railway ssh -s civista-integration` then `tail -f
+// /tmp/civista.log` to watch live application output. This runs first so
+// boot-time messages (DB init, portal guard, SFTP server banner) all land
+// in the file too.
+require('./src/monitoring/log-file').installFileLogger();
+
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
