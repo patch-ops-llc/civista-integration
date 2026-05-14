@@ -511,12 +511,45 @@ function startSftpServer(options = {}) {
               sftp.status(reqid, e.code === 'ENOENT' ? STATUS_CODE.NO_SUCH_FILE : STATUS_CODE.FAILURE);
             }
           });
+
+          // SFTP subsystem teardown. When the client types `bye` (or otherwise
+          // closes the SFTP channel) we must explicitly tear down any pending
+          // write streams and dir cursors. Without this, openssh's sftp on
+          // macOS sat indefinitely on `bye` waiting for the channel to close
+          // because the server kept the stream end-callbacks pinned to a
+          // socket that the client was no longer reading from.
+          const teardown = () => {
+            for (const [, file] of openFiles) {
+              try {
+                if (file.kind === 'write' && file.stream && !file.stream.destroyed) {
+                  file.stream.destroy();
+                }
+                if (file.kind === 'read' && typeof file.fd === 'number') {
+                  fs.closeSync(file.fd);
+                }
+              } catch { /* already cleaned */ }
+            }
+            openFiles.clear();
+            if (dirCursors) dirCursors.clear();
+          };
+          sftp.on('end', teardown);
+          sftp.on('close', teardown);
         });
+
+        // SSH session close: also tear down so the channel exits promptly.
+        session.on('close', () => { try { session.end(); } catch { /* already ended */ } });
       });
     });
 
     client.on('end', () => {
       console.log('SFTP client disconnected');
+    });
+    // Hard close: when the underlying TCP/SSH connection closes (which `bye`
+    // triggers after channel close), ensure we don't keep the client object
+    // alive. ssh2 normally handles this, but defending against stuck states
+    // when something earlier in the chain failed silently.
+    client.on('close', () => {
+      try { client.end(); } catch { /* already ended */ }
     });
   });
 
