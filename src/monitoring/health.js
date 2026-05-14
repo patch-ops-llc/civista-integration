@@ -11,12 +11,23 @@ const { pool } = require('../../db/init');
 async function getHealthStatus() {
   const client = await pool.connect();
   try {
+    // Only consider the 6 real staging-table sync runs for the overall
+    // healthy/unhealthy verdict. Meta sync_log rows like 'cif:unclassified'
+    // (created for CIF classification quarantines) carry records_failed > 0
+    // by design — they record EXPECTED operator-visible quarantine samples
+    // per UAT scenario 10. Letting those flip /health to "unhealthy" would
+    // contradict scenario 3, which expects {"status":"healthy",...} as long
+    // as the actual pipeline tables are processing cleanly.
     const lastSyncs = await client.query(`
       SELECT DISTINCT ON (table_name)
         id, table_name, started_at, completed_at,
         records_attempted, records_created, records_updated,
         records_failed, records_skipped, error_details, row_count
       FROM sync_log
+      WHERE table_name IN (
+        'stg_contacts', 'stg_companies', 'stg_deposits',
+        'stg_loans', 'stg_time_deposits', 'stg_debit_cards'
+      )
       ORDER BY table_name, started_at DESC
     `);
 
