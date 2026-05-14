@@ -25,20 +25,31 @@ const FILE_SOURCE_MAP = {
   'HubSpot_Debit_Card.csv': 'debit_cards',
 };
 
-// Accept the canonical filename plus three common suffixes that occur in the
-// wild without changing the source semantics:
-//   - macOS Finder dedup:  "HubSpot_CIF 1.csv", "HubSpot_CIF 2.csv"
-//   - Windows Explorer dedup: "HubSpot_CIF (1).csv"
-//   - date-stamped delivery: "HubSpot_CIF_20260508.csv" / "HubSpot_CIF-20260508.csv"
-// Anything outside this list (e.g. "HubSpot_CIF_backup.csv") is rejected so a
-// stray file can't masquerade as the nightly drop.
+// Accept any filename that begins with the canonical stem and ends with .csv.
+// This intentionally covers operator/brief variants like:
+//   - canonical:               "HubSpot_CIF.csv"
+//   - macOS Finder dedup:      "HubSpot_CIF 1.csv"
+//   - Windows Explorer dedup:  "HubSpot_CIF (1).csv"
+//   - date-stamped delivery:   "HubSpot_CIF_20260508.csv" / "HubSpot_CIF-20260508.csv"
+//   - UAT brief naming:        "HubSpot_CIFTRUNC.csv"
+//   - operator backups/variants: "HubSpot_CIF_backup.csv", "HubSpot_CIF_v2.csv"
+// We rely on the CSV header validator (validateHeaders in csv-parser.js) to
+// reject files whose content doesn't match the expected schema for that
+// source — filename strictness was a flimsy guard and caused real UAT
+// failures when operators dropped files with reasonable variant names.
+//
+// Ordering note: canonical stems do not overlap as prefixes of each other
+// (CIF / DDA / Loan / CD / Debit_Card), so prefix-based matching is
+// unambiguous between sources. If a future source added one that did overlap
+// (e.g. a "HubSpot_CDx" sibling alongside "HubSpot_CD"), this regex would
+// need a terminator like (?![A-Za-z]) — not needed today.
 const ACCEPTED_SUFFIX_DESCRIPTION =
-  'optionally suffixed with macOS dedup " N", Windows dedup " (N)", or "_YYYYMMDD"/"-YYYYMMDD"';
+  'any HubSpot_<source>*.csv (canonical, dedup suffix, date stamp, TRUNC, _v2, _backup, ...)';
 
 function buildAcceptPattern(canonical) {
   const stem = canonical.replace(/\.csv$/, '');
   const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${escaped}(?: \\d+| \\(\\d+\\)|[_-]\\d{8})?\\.csv$`);
+  return new RegExp(`^${escaped}.*\\.csv$`, 'i');
 }
 
 // Resolve, for each canonical source, the single file in incomingDir that
