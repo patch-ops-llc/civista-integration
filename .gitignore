@@ -12,3 +12,11 @@ validate.sh
 scripts/__pycache__/
 civista-railway-env.json
 test-data/
+
+# Local UAT walkers — these contain UAT-only credentials hardcoded for
+# screenshare demos. Never commit, never ship.
+uat.sh
+walk-uat.sh
+*-uat-walker.sh
+run-uat.sh
+prep-uat.sh
