@@ -302,25 +302,38 @@ function startSftpServer(options = {}) {
           //                                able to inspect quarantined files)
           // Everything else collapses to incomingDir for backward compat with
           // existing programmatic clients that just PUT to "/".
+          // Normalize a path to its terminal segment when that segment is one
+          // of our known roots ("incoming" or "quarantine"). This makes the
+          // UAT brief's `cd incoming` work from /incoming: the client sends
+          // STAT for /incoming/incoming → terminal segment is "incoming" →
+          // collapses to /incoming. Same for /quarantine/quarantine, etc.
+          function terminalRoot(input) {
+            const raw = String(input || '').trim();
+            const norm = raw.replace(/\\/g, '/').replace(/\/+$/, '');
+            if (!norm) return null;
+            const last = norm.split('/').filter(Boolean).pop();
+            if (last === 'incoming' || last === 'quarantine') return last;
+            return null;
+          }
           function resolveDir(input) {
             const raw = String(input || '').trim();
             const norm = raw.replace(/\\/g, '/').replace(/\/+$/, '');
-            // Recognize both "/quarantine" and "quarantine" (after cd quarantine).
-            if (norm === '/quarantine' || norm === 'quarantine' || norm === quarantineDir) {
-              return quarantineDir;
-            }
-            if (norm === '/incoming' || norm === 'incoming' || norm === incomingDir) {
-              return incomingDir;
-            }
+            // Direct matches first.
+            if (norm === quarantineDir) return quarantineDir;
+            if (norm === incomingDir) return incomingDir;
+            // Terminal-segment matches so `cd incoming` from /incoming works
+            // even though the client sends /incoming/incoming.
+            const root = terminalRoot(norm);
+            if (root === 'quarantine') return quarantineDir;
+            if (root === 'incoming') return incomingDir;
             return incomingDir; // default root
           }
           function isDirRequest(input) {
             const raw = String(input || '').trim();
             if (raw === '' || raw === '.' || raw === '/') return true;
             const norm = raw.replace(/\\/g, '/').replace(/\/+$/, '');
-            if (norm === '/quarantine' || norm === 'quarantine') return true;
-            if (norm === '/incoming' || norm === 'incoming') return true;
             if (norm === incomingDir || norm === quarantineDir) return true;
+            if (terminalRoot(norm)) return true;
             return false;
           }
           // Resolve a path that may be a file inside one of the two roots.
