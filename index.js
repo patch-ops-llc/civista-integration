@@ -59,7 +59,10 @@ const QUARANTINE_DIR = process.env.QUARANTINE_DIR || path.join(__dirname, 'quara
 // the debug UI, wire log, and schema-check route are OFF unless explicitly
 // enabled. Manual /sync requires a token; without one set, /sync returns 403
 // and only the cron can trigger a sync.
-const ENABLE_DEBUG_UI    = process.env.ENABLE_DEBUG_UI === '1';
+// UI stripped at Civista handoff per explicit operator direction.
+// Hardcoded false so a stray ENABLE_DEBUG_UI=1 env var cannot resurrect it
+// in production. To re-enable for debugging, change this line locally only.
+const ENABLE_DEBUG_UI    = false;
 const ENABLE_WIRE_LOG    = process.env.ENABLE_WIRE_LOG === '1';
 const ENABLE_SCHEMA_CHECK = process.env.ENABLE_SCHEMA_CHECK === '1';
 const MANUAL_SYNC_TOKEN  = process.env.MANUAL_SYNC_TOKEN || null;
