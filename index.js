@@ -8,7 +8,6 @@ const { pool, initDb } = require('./db/init');
 const { runFullSync } = require('./src/sync/orchestrator');
 const { getHealthStatus } = require('./src/monitoring/health');
 const { startSftpServer } = require('./src/ingestion/sftp-server');
-const { testAuth, uploadFile } = require('./src/sync/sftp-client');
 const { hubspotFetch } = require('./src/sync/hubspot');
 const { eventStream, installConsoleHook, emitHubspot, getRingBuffer } = require('./src/monitoring/event-stream');
 const { TABLES, CIF_CONTACT_FIELDS, CIF_COMPANY_FIELDS } = require('./src/transform/hubspot-mapping');
@@ -56,13 +55,9 @@ const ARCHIVE_DIR = process.env.ARCHIVE_DIR || path.join(__dirname, 'archive');
 const QUARANTINE_DIR = process.env.QUARANTINE_DIR || path.join(__dirname, 'quarantine');
 
 // Feature flags (Railway env vars). Defaults are conservative for prod:
-// the debug UI, wire log, and schema-check route are OFF unless explicitly
-// enabled. Manual /sync requires a token; without one set, /sync returns 403
-// and only the cron can trigger a sync.
-// UI stripped at Civista handoff per explicit operator direction.
-// Hardcoded false so a stray ENABLE_DEBUG_UI=1 env var cannot resurrect it
-// in production. To re-enable for debugging, change this line locally only.
-const ENABLE_DEBUG_UI    = false;
+// the wire log and schema-check route are OFF unless explicitly enabled.
+// Manual /sync requires a token; without one set, /sync returns 403 and
+// only the cron can trigger a sync.
 const ENABLE_WIRE_LOG    = process.env.ENABLE_WIRE_LOG === '1';
 const ENABLE_SCHEMA_CHECK = process.env.ENABLE_SCHEMA_CHECK === '1';
 const MANUAL_SYNC_TOKEN  = process.env.MANUAL_SYNC_TOKEN || null;
@@ -138,33 +133,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Static assets for the debug UI — only when ENABLE_DEBUG_UI=1.
-// When the flag is off, GET / and any /index.html etc. return 404 so the
-// service is API-only in prod by default.
-if (ENABLE_DEBUG_UI) {
-  app.use(express.static(path.join(__dirname, 'public')));
-} else {
-  app.get('/', (req, res) => res.status(404).send('Debug UI disabled (set ENABLE_DEBUG_UI=1)'));
-}
-
-// SFTP connection defaults — read by the UI on page load to pre-fill the
-// SFTP form. Reads:
-//   - RAILWAY_TCP_PROXY_DOMAIN / _PORT (auto-set by Railway when TCP Proxy
-//     is enabled on the service; correct values even after Railway rotates
-//     the external port)
-//   - SFTP_USER / SFTP_PASS (operator-configured)
-// All values are GET, so they're publicly reachable on the Railway URL.
-// This is intentional for demo ergonomics — the sandbox SFTP creds let an
-// attacker upload CSVs into a sandbox staging dir, nothing more.
-app.get('/api/sftp-defaults', (req, res) => {
-  res.json({
-    host: process.env.RAILWAY_TCP_PROXY_DOMAIN || null,
-    port: process.env.RAILWAY_TCP_PROXY_PORT || null,
-    username: process.env.SFTP_USER || null,
-    password: process.env.SFTP_PASS || null,
-  });
-});
-
 // Service info — public, no auth, no flag.
 app.get('/api/info', (req, res) => {
   res.json({
@@ -172,7 +140,6 @@ app.get('/api/info', (req, res) => {
     version: '1.0.0',
     description: 'Civista Bank HubSpot nightly data sync pipeline',
     features: {
-      debug_ui: ENABLE_DEBUG_UI,
       wire_log: ENABLE_WIRE_LOG,
       schema_check: ENABLE_SCHEMA_CHECK,
       manual_sync: !!MANUAL_SYNC_TOKEN,
@@ -393,67 +360,7 @@ app.post('/admin/reset-sandbox', async (req, res) => {
   });
 });
 
-// -------------------- SFTP auth (test only) --------------------
-app.post('/api/sftp-auth', async (req, res) => {
-  const { host, port, username, password } = req.body || {};
-  if (!host || !port || !username || !password) {
-    return res.status(400).json({ error: 'host, port, username, password are required' });
-  }
-  try {
-    await testAuth({ host, port, username, password });
-    res.json({ ok: true });
-  } catch (e) {
-    // Diagnostic on failure: log enough to identify autofill / whitespace
-    // issues without leaking the password. Compare received vs expected
-    // length and first/last char codes.
-    const expected = process.env.SFTP_PASS || '';
-    const recv = String(password);
-    const summary = {
-      length_recv: recv.length,
-      length_expected: expected.length,
-      first_char_code: recv.charCodeAt(0) || null,
-      last_char_code: recv.charCodeAt(recv.length - 1) || null,
-      has_leading_ws: /^\s/.test(recv),
-      has_trailing_ws: /\s$/.test(recv),
-      username_recv: username,
-    };
-    console.warn(`SFTP auth failed from UI: ${e.message} · diagnostic=${JSON.stringify(summary)}`);
-    res.status(401).json({ error: e.message });
-  }
-});
-
-// -------------------- SFTP upload from browser --------------------
-// Browser sends a single file + creds. Server uses creds to SFTP-put the
-// file into its own SFTP endpoint (same host). If SFTP is down or creds
-// are bad, the upload fails — which is exactly the guarantee we want.
-app.post('/api/sftp-upload', upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'no file' });
-  let creds;
-  try { creds = JSON.parse(req.body.creds || '{}'); }
-  catch { return res.status(400).json({ error: 'invalid creds json' }); }
-  if (!creds.host || !creds.port || !creds.username || !creds.password) {
-    return res.status(400).json({ error: 'creds must include host, port, username, password' });
-  }
-
-  const remoteName = path.basename(req.file.originalname);
-  try {
-    await uploadFile(creds, req.file.path, remoteName);
-    console.log(`Browser→SFTP: pushed ${remoteName} to ${creds.host}:${creds.port}`);
-    res.json({ ok: true, remoteName });
-  } catch (e) {
-    console.warn(`SFTP upload failed for ${remoteName}: ${e.message}`);
-    res.status(502).json({ error: e.message });
-  } finally {
-    // Clean up the temp upload file. Log if it fails so we don't quietly leak tmpfs.
-    fs.unlink(req.file.path, (err) => {
-      if (err && err.code !== 'ENOENT') {
-        console.warn(`Failed to clean tmp upload ${req.file.path}: ${err.code || err.message}`);
-      }
-    });
-  }
-});
-
-// -------------------- Legacy direct upload (kept for CLI use) --------------------
+// -------------------- Direct upload (CLI) --------------------
 app.post('/upload', upload.array('files'), (req, res) => {
   if (!req.files || req.files.length === 0) {
     return res.status(400).json({ error: 'No files uploaded' });
