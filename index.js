@@ -267,7 +267,7 @@ app.post('/admin/reset-sandbox', async (req, res) => {
     });
   }
 
-  const OBJECTS = [
+  const ALL_OBJECTS = [
     ['contacts',    'Contacts'],
     ['companies',   'Companies'],
     ['2-60442978',  'Deposits'],
@@ -275,6 +275,29 @@ app.post('/admin/reset-sandbox', async (req, res) => {
     ['2-60442980',  'Time Deposits'],
     ['2-60442979',  'Debit Cards'],
   ];
+
+  // Optional object filter: body { objects: [...] } limits which HubSpot
+  // objects get wiped (matched by object-type id OR label, case-insensitive).
+  // Omitted/empty = all six (backward compatible). The DB ledger/staging
+  // truncation below always runs in full so the next /sync rebuilds cleanly.
+  // NOTE: each object drains at most ~10k records per call (safetyLoop cap),
+  // so this endpoint is only safe for objects under that size in one shot.
+  let OBJECTS = ALL_OBJECTS;
+  const requested = Array.isArray(req.body && req.body.objects) ? req.body.objects : null;
+  if (requested && requested.length) {
+    const want = new Set(requested.map(s => String(s).trim().toLowerCase()));
+    OBJECTS = ALL_OBJECTS.filter(([obj, label]) =>
+      want.has(obj.toLowerCase()) || want.has(label.toLowerCase()));
+    const matched = new Set(OBJECTS.flatMap(([obj, label]) => [obj.toLowerCase(), label.toLowerCase()]));
+    const unknown = [...want].filter(w => !matched.has(w));
+    if (unknown.length) {
+      return res.status(400).json({
+        error: 'unknown objects in filter',
+        unknown,
+        valid: ALL_OBJECTS.map(([obj, label]) => ({ id: obj, label })),
+      });
+    }
+  }
 
   // (2) Wipe each HubSpot object — paginate via /list, batch-archive 100 at a time.
   const hsSummary = {};
