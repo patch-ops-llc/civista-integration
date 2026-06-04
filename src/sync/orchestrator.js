@@ -147,6 +147,11 @@ async function syncStagingTable(stagingTable, runId) {
 
   let totalShipped = 0, totalFailed = 0, totalInvalid = 0, toSyncTotal = 0;
 
+  // Shared across pages: tracks emails already claimed this run so duplicate
+  // emails across CIFs (common in banking) are dropped from later contacts
+  // proactively instead of 409-ing and forcing slow per-record retries.
+  const emailDedup = stagingTable === 'stg_contacts' ? { seen: new Set(), dropped: 0 } : null;
+
   // Stream changed rows in keyset pages so we never hold the whole changed set
   // (252k+ rows at prod scale) in the Node heap at once. Each page is synced,
   // its successes ledgered, and its failures recorded before the next page is
@@ -162,6 +167,7 @@ async function syncStagingTable(stagingTable, runId) {
       sourceTable: stagingTable,
       sourceCsv,
       runId,
+      emailDedup,
     });
 
     await recordShipped(stagingTable, succeeded, byKey);
@@ -191,6 +197,9 @@ async function syncStagingTable(stagingTable, runId) {
 
   const skipped = total - toSyncTotal - nullKeyRows.length;
   console.log(`${stagingTable}: total=${total}, to_sync=${toSyncTotal}, unchanged=${skipped}, null_key=${nullKeyRows.length}`);
+  if (emailDedup && emailDedup.dropped > 0) {
+    console.log(`${stagingTable}: dropped ${emailDedup.dropped} duplicate email(s) across CIFs (kept on first owner; raw value retained in raw_csv)`);
+  }
 
   const quarantineCount = nullKeyRows.length + totalInvalid + totalFailed;
   const reconciled = (totalShipped + skipped + quarantineCount) === total;

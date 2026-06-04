@@ -348,7 +348,7 @@ async function batchUpsert(objectType, idProperty, inputs, opts = {}) {
  *  - reads back successful records and verifies HASH C
  */
 async function syncRows(rows, fields, objectType, idProperty, opts = {}) {
-  const { sourceTable = null, sourceCsv = null, runId = null } = opts;
+  const { sourceTable = null, sourceCsv = null, runId = null, emailDedup = null } = opts;
 
   const dbPayloadByKey = new Map();
   const inputs = [];
@@ -389,6 +389,22 @@ async function syncRows(rows, fields, objectType, idProperty, opts = {}) {
         runId, sourceTable, sourceKey: row[idProperty] || null,
         context: { rawValue: p.raw, prop: p.prop, csv: p.csv },
       });
+    }
+
+    // Proactive email de-dup (contacts only). HubSpot enforces unique contact
+    // email, but Civista data routinely shares one email across CIFs
+    // (spouses/family/joint accounts). On a clean load this would otherwise
+    // 409 and force the slow per-record fallback for every poisoned batch.
+    // Keep the email on the first CIF that claims it this run and omit it on
+    // the rest (raw value stays in raw_csv). The per-record 409 fallback below
+    // still covers collisions with contacts that pre-date this run.
+    if (emailDedup && objectType === 'contacts' && typeof props.email === 'string' && props.email) {
+      if (emailDedup.seen.has(props.email)) {
+        delete props.email;
+        emailDedup.dropped++;
+      } else {
+        emailDedup.seen.add(props.email);
+      }
     }
 
     // Always include the idProperty value in properties (fixes the
