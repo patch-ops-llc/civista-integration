@@ -133,3 +133,75 @@ All logging goes to stdout (Railway captures this automatically).
 Processed CSVs are moved to `/archive/{YYYY-MM-DD}/`. These serve as a record of exactly what was processed on each date. They're useful for:
 - Debugging "what did the data look like on date X?"
 - Re-processing if needed (copy back to `/incoming/` and trigger sync)
+
+---
+
+## Account model & associations
+
+Deposits, Loans, and Time Deposits use the **deduplicated account model**: a single
+physical account that appears in the source as multiple owner rows (one per owner,
+each with its own `PrimaryKey` and a single-letter `relationship` code) is collapsed
+into **one** HubSpot record keyed on `account_key` (currently `branch_number | account_type |
+last_4_account_digits` — see `buildAccountKey` in `src/transform/hubspot-mapping.js`).
+Every owner row is retained in the `stg_*_owners` tables and turned into a labeled
+association after the account record syncs.
+
+- Relationship codes → HubSpot labels: `src/transform/relationship-map.js` (Ivan's legend;
+  e.g. `B = CUSTODIAN`, `H = BENEFICIARY`, `M = TRUSTEE`).
+- Labels → portal association-type IDs are pulled live (`src/sync/association-labels.js`).
+- The association engine is `src/sync/associations.js`, run by the orchestrator after each
+  account/debit-card table syncs. Debit Cards link to their single owner **unlabeled**.
+- Idempotency: created edges are recorded in `shipped_associations`; existing edges are
+  filtered before sending, so steady-state nightly runs create ~0 associations.
+
+**Before the first sync against a portal**, ensure `account_key` is a unique property on the
+three account objects: `node scripts/setup-hubspot-properties.js`. Then verify every legend
+code resolves to a configured label: `node scripts/pull-association-labels.js` (read-only;
+writes a spec snapshot to `docs/association-spec.<portalId>.json`).
+
+Disable association building entirely with `ENABLE_ASSOCIATIONS=0`.
+
+### Relevant env vars
+| Var | Purpose |
+|-----|---------|
+| `VERIFY_HUBSPOT_READBACK` | HASH C read-back. Set `0` for the initial full backfill (halves API volume / avoids big-table stalls), then re-enable (`1` or unset) for nightly deltas. |
+| `DIFF_BATCH_SIZE` | Changed-row page size for the keyset-streamed diff (default 2000). Lower if memory-pressured at prod scale. |
+| `ASSOC_PAGE_SIZE` | Owner rows resolved per page in the association engine (default 1000). |
+| `ENABLE_ASSOCIATIONS` | `0` disables association building. |
+
+---
+
+## Full re-sync + QA (sandbox)
+
+After the dedup/association build, the sandbox holds the *old* per-owner-row duplicate
+records, so reload it cleanly rather than merging in place (client confirmed records are
+unused):
+
+1. Confirm the key targets sandbox portal `51313397`, then `POST /admin/reset-sandbox`
+   (wipes the 6 HubSpot objects + ledger + owner tables + `shipped_associations`).
+2. Ensure `account_key` is unique in HubSpot: `node scripts/setup-hubspot-properties.js`.
+3. (Backfill) set `VERIFY_HUBSPOT_READBACK=0`, drop all 5 CSVs in `/incoming/`, `POST /sync`.
+4. QA:
+   - `node scripts/check-status.js` — account counts now reflect physical accounts (no
+     per-owner duplicates).
+   - `node scripts/check-associations.js` — `created > 0`, `failed = 0`, `unresolved = 0`.
+   - Spot-check a multi-owner account (e.g. DDA last4 `3509`): one Deposit record with one
+     PRIMARY OWNER + the co-owners/signers attached.
+   - `/api/issues` `hash_health` shows no mismatches.
+5. Re-enable `VERIFY_HUBSPOT_READBACK` for nightly deltas.
+
+---
+
+## Production cutover
+
+Prod currently holds the same per-owner duplicates created by the original `PrimaryKey`
+import, and the client confirmed records are unused. Cut over by reloading under the new
+model:
+
+1. Point `HUBSPOT_API_KEY` at prod (portal `50181316`).
+2. `railway run --service=civista-integration node scripts/cutover-portal.js` — clears the
+   portal-specific ledger/staging/`shipped_associations` and acknowledges the cutover so the
+   boot guard stops blocking `/sync`.
+3. `node scripts/setup-hubspot-properties.js` and `node scripts/pull-association-labels.js`
+   against prod to confirm `account_key` uniqueness and label resolution.
+4. Backfill with `VERIFY_HUBSPOT_READBACK=0`, then QA as above, then re-enable read-back.

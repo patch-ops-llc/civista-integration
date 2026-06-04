@@ -3,10 +3,11 @@ const path = require('path');
 const { pool } = require('../../db/init');
 const { parseAndStage, verifyDbPersistence } = require('../ingestion/csv-parser');
 const { checkCircuitBreaker } = require('../ingestion/circuit-breaker');
-const { getChangedRows, recordShipped } = require('../ingestion/diff-engine');
+const { getDiffSummary, iterateChangedRows, recordShipped } = require('../ingestion/diff-engine');
 const { recordErrorBatch, ERROR_TYPES } = require('../monitoring/errors');
 const loud = require('../monitoring/loud');
 const { TABLES } = require('../transform/hubspot-mapping');
+const { syncAssociations } = require('./associations');
 const {
   syncContacts,
   syncCompanies,
@@ -15,6 +16,12 @@ const {
   syncTimeDeposits,
   syncDebitCards,
 } = require('./hubspot');
+
+// Account/debit-card sources whose records get owner associations after sync.
+// Owners (CIF → contacts/companies) ship earlier in syncOrder, so their ledger
+// ids exist by the time these run. Disable with ENABLE_ASSOCIATIONS=0.
+const ASSOCIATION_SOURCES = new Set(['dda', 'loans', 'cd', 'debit_cards']);
+const ASSOCIATIONS_ENABLED = process.env.ENABLE_ASSOCIATIONS !== '0';
 
 // CSV filename → logical source key used by parseAndStage / TABLES.
 const FILE_SOURCE_MAP = {
@@ -82,12 +89,17 @@ function resolveSourceFiles(incomingDir, files, syncOrder) {
 
 // For each staging table, which HubSpot sync function, which column is the
 // unique id, and which source CSV the rows came from (for loud-event context).
+// keyColumn MUST match the HubSpot idProperty in hubspot-mapping.js so the diff
+// ledger (shipped_records.source_key), the byKey index used by recordShipped,
+// and the upsert identity all agree. Account tables key on account_key (the
+// deduped one-record-per-physical-account identity), not the per-owner
+// primary_key.
 const STAGING_SYNC = {
   stg_contacts:      { syncFn: syncContacts,     keyColumn: 'cif_number',    objectLabel: 'contacts',      sourceCsv: 'HubSpot_CIF.csv' },
   stg_companies:     { syncFn: syncCompanies,    keyColumn: 'cif_number',    objectLabel: 'companies',     sourceCsv: 'HubSpot_CIF.csv' },
-  stg_deposits:      { syncFn: syncDeposits,     keyColumn: 'primary_key',   objectLabel: 'deposits',      sourceCsv: 'HubSpot_DDA.csv' },
-  stg_loans:         { syncFn: syncLoans,        keyColumn: 'primary_key',   objectLabel: 'loans',         sourceCsv: 'HubSpot_Loan.csv' },
-  stg_time_deposits: { syncFn: syncTimeDeposits, keyColumn: 'primary_key',   objectLabel: 'time_deposits', sourceCsv: 'HubSpot_CD.csv' },
+  stg_deposits:      { syncFn: syncDeposits,     keyColumn: 'account_key',   objectLabel: 'deposits',      sourceCsv: 'HubSpot_DDA.csv' },
+  stg_loans:         { syncFn: syncLoans,        keyColumn: 'account_key',   objectLabel: 'loans',         sourceCsv: 'HubSpot_Loan.csv' },
+  stg_time_deposits: { syncFn: syncTimeDeposits, keyColumn: 'account_key',   objectLabel: 'time_deposits', sourceCsv: 'HubSpot_CD.csv' },
   stg_debit_cards:   { syncFn: syncDebitCards,   keyColumn: 'composite_key', objectLabel: 'debit_cards',   sourceCsv: 'HubSpot_Debit_Card.csv' },
 };
 
@@ -120,8 +132,7 @@ async function updateSyncLog(logId, updates) {
 async function syncStagingTable(stagingTable, runId) {
   const { syncFn, keyColumn, objectLabel, sourceCsv } = STAGING_SYNC[stagingTable];
 
-  const { toSync, skipped, nullKeyRows, total } = await getChangedRows(stagingTable, keyColumn);
-  console.log(`${stagingTable}: total=${total}, to_sync=${toSync.length}, unchanged=${skipped}, null_key=${nullKeyRows.length}`);
+  const { total, nullKeyRows } = await getDiffSummary(stagingTable, keyColumn);
 
   // Null-key rows can't be upserted to HubSpot — quarantine to sync_errors.
   if (nullKeyRows.length > 0) {
@@ -134,23 +145,29 @@ async function syncStagingTable(stagingTable, runId) {
     })));
   }
 
-  let totalShipped = 0, totalFailed = 0, totalInvalid = 0;
+  let totalShipped = 0, totalFailed = 0, totalInvalid = 0, toSyncTotal = 0;
 
-  if (toSync.length > 0) {
-    // Index rows by key so we can write the row_hash into shipped_records after a successful send.
+  // Stream changed rows in keyset pages so we never hold the whole changed set
+  // (252k+ rows at prod scale) in the Node heap at once. Each page is synced,
+  // its successes ledgered, and its failures recorded before the next page is
+  // pulled — bounding memory to one DIFF_BATCH_SIZE page plus its HubSpot
+  // input objects regardless of table size.
+  for await (const page of iterateChangedRows(stagingTable, keyColumn)) {
+    toSyncTotal += page.length;
+
     const byKey = new Map();
-    for (const r of toSync) byKey.set(r[keyColumn], r);
+    for (const r of page) byKey.set(r[keyColumn], r);
 
-    const { succeeded, failed, invalidInputs } = await syncFn(toSync, {
+    const { succeeded, failed, invalidInputs } = await syncFn(page, {
       sourceTable: stagingTable,
       sourceCsv,
       runId,
     });
 
     await recordShipped(stagingTable, succeeded, byKey);
-    totalShipped = succeeded.length;
-    totalFailed = failed.length;
-    totalInvalid = invalidInputs.length;
+    totalShipped += succeeded.length;
+    totalFailed += failed.length;
+    totalInvalid += invalidInputs.length;
 
     if (invalidInputs.length > 0) {
       await recordErrorBatch(invalidInputs.map(i => ({
@@ -171,6 +188,9 @@ async function syncStagingTable(stagingTable, runId) {
       })));
     }
   }
+
+  const skipped = total - toSyncTotal - nullKeyRows.length;
+  console.log(`${stagingTable}: total=${total}, to_sync=${toSyncTotal}, unchanged=${skipped}, null_key=${nullKeyRows.length}`);
 
   const quarantineCount = nullKeyRows.length + totalInvalid + totalFailed;
   const reconciled = (totalShipped + skipped + quarantineCount) === total;
@@ -291,6 +311,48 @@ async function syncFile(source, filePath) {
     }
   }
 
+  // Build owner associations after the account/debit-card records have shipped.
+  // Association issues never quarantine the CSV (gatesArchive=false): the data
+  // synced fine and links retry idempotently next run.
+  if (ASSOCIATIONS_ENABLED && ASSOCIATION_SOURCES.has(source)) {
+    const assocRunId = await createSyncLog(`${source}:associations`, 0, fileHash);
+    try {
+      const stats = await syncAssociations(source, { runId: assocRunId });
+      const failed = Math.max(0, stats.failed);
+      await updateSyncLog(assocRunId, {
+        records_attempted: stats.created + failed,
+        records_created: stats.created,
+        records_failed: failed,
+        records_skipped: stats.skippedExisting,
+        error_details: (stats.failed !== 0 || stats.unresolved > 0)
+          ? { unresolved: stats.unresolved, failed: stats.failed, error: stats.error || null }
+          : null,
+      });
+      results.push({
+        source, stagingTable: `${source}:associations`, runId: assocRunId,
+        kind: 'associations',
+        created: stats.created, skippedExisting: stats.skippedExisting,
+        unresolved: stats.unresolved, errorCount: failed,
+        reconciled: stats.failed === 0,
+        gatesArchive: false,
+      });
+    } catch (err) {
+      console.error(`Error building ${source} associations: ${err.message}`);
+      await loud.alarm({
+        event: 'associations_failed',
+        message: `${source} associations threw: ${err.message}`,
+        runId: assocRunId, sourceTable: `${source}:associations`,
+        context: { stack: err.stack ? String(err.stack).split('\n').slice(0, 5).join('\n') : null },
+      });
+      await updateSyncLog(assocRunId, { records_attempted: 0, records_failed: 0, error_details: { error: err.message } });
+      results.push({
+        source, stagingTable: `${source}:associations`, runId: assocRunId,
+        kind: 'associations', created: 0, errorCount: 1,
+        reconciled: false, gatesArchive: false, error: err.message,
+      });
+    }
+  }
+
   return results;
 }
 
@@ -379,7 +441,9 @@ async function runFullSync(incomingDir, archiveDir, quarantineDir) {
     const fileResults = await syncFile(source, filePath);
     results.push(...fileResults);
 
-    const anyBad = fileResults.some(r => r.error || r.skipped || !r.reconciled);
+    // Association results never gate archival (gatesArchive=false) — the data
+    // file synced correctly and links retry idempotently on the next run.
+    const anyBad = fileResults.some(r => (r.error || r.skipped || !r.reconciled) && r.gatesArchive !== false);
     if (anyBad) {
       await quarantineFile(filePath, quarantineDir, fileResults);
     } else {

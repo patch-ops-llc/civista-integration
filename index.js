@@ -338,9 +338,10 @@ app.post('/admin/reset-sandbox', async (req, res) => {
   // we're resetting data, not changing portals.
   const TRUNCATE = [
     'sync_log', 'sync_errors', 'mapping_issues',
-    'hubspot_id_map', 'shipped_records',
+    'hubspot_id_map', 'shipped_records', 'shipped_associations',
     'stg_contacts', 'stg_companies', 'stg_deposits',
     'stg_loans', 'stg_time_deposits', 'stg_debit_cards',
+    'stg_deposit_owners', 'stg_loan_owners', 'stg_time_deposit_owners',
   ];
   const truncated = [], skipped = [];
   for (const t of TRUNCATE) {
@@ -806,6 +807,36 @@ app.get('/api/issues', async (req, res) => {
       } catch { /* table may not exist yet */ }
     }
 
+    // Association run summary — latest `<source>:associations` sync_log row per
+    // account/debit-card source. Surfaces created / skipped / failed counts and
+    // unresolved links (owner or account not yet shipped) so the operator can
+    // see the association engine's output alongside the data sync.
+    const associations = {};
+    for (const src of ['dda', 'loans', 'cd', 'debit_cards']) {
+      try {
+        const r = await pool.query(
+          `SELECT id, started_at, completed_at, records_attempted, records_created,
+                  records_failed, records_skipped, error_details
+           FROM sync_log WHERE table_name = $1 ORDER BY id DESC LIMIT 1`,
+          [`${src}:associations`]
+        );
+        if (r.rows.length > 0) {
+          const row = r.rows[0];
+          associations[src] = {
+            run_id: row.id,
+            started_at: row.started_at,
+            completed_at: row.completed_at,
+            created: row.records_created,
+            skipped_existing: row.records_skipped,
+            failed: row.records_failed,
+            unresolved: row.error_details?.unresolved ?? 0,
+          };
+        } else {
+          associations[src] = { run_id: null, created: 0, skipped_existing: 0, failed: 0, unresolved: 0 };
+        }
+      } catch { /* sync_log may be empty */ }
+    }
+
     // Hash health across all staging tables (cumulative across runs).
     // - csv_to_db / a_to_b (HASH A→B): staging row_hash present + verified vs needs_review.
     // - db_to_hubspot / b_to_c (HASH B→C): rows whose db state matches what's in HubSpot.
@@ -940,6 +971,7 @@ app.get('/api/issues', async (req, res) => {
         by_type:     Object.fromEntries(byType.rows.map(r => [r.error_type, r.c])),
         samples:     samples.rows,
         per_source_table: perSourceTable,
+        associations,
       },
       hash_health: hashHealth,
       coercion_audit: coercionAudit,
@@ -1212,8 +1244,9 @@ app.post('/api/demo-reset', async (req, res) => {
   try {
     // 1. TRUNCATE Postgres (preserves meta so portal guard stays valid).
     const tables = [
-      'sync_errors','sync_log','mapping_issues','shipped_records','hubspot_id_map',
+      'sync_errors','sync_log','mapping_issues','shipped_records','shipped_associations','hubspot_id_map',
       'stg_contacts','stg_companies','stg_deposits','stg_loans','stg_time_deposits','stg_debit_cards',
+      'stg_deposit_owners','stg_loan_owners','stg_time_deposit_owners',
     ];
     for (const t of tables) {
       try { await pool.query(`TRUNCATE ${t} RESTART IDENTITY`); result.postgres[t] = 'truncated'; }

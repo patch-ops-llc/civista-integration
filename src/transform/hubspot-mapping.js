@@ -81,6 +81,10 @@ const CIF_COMPANY_FIELDS = [...CIF_COMMON, ...CIF_COMPANY_ONLY];
 
 // DDA CSV → Deposits (custom object 2-60442978).
 const DDA_FIELDS = [
+  // account_key is the account-level upsert identity (one HubSpot record per
+  // physical account; see ACCOUNT_KEY_COLUMNS / buildAccountKey). It is NOT a
+  // CSV column — it's derived during parse — so it carries no `csv` source.
+  { csv: null,            prop: 'account_key',              type: 'string', derived: true },
   { csv: 'PrimaryKey',    prop: 'primary_key',              type: 'string' },
   { csv: 'Acctlast4',     prop: 'last_4_account_digits',    type: 'string' },
   { csv: 'CIF#',          prop: 'cif_number',               type: 'string' },
@@ -105,6 +109,7 @@ const DDA_FIELDS = [
 
 // Loans CSV → Loans (custom object 2-60442977).
 const LOANS_FIELDS = [
+  { csv: null,              prop: 'account_key',            type: 'string', derived: true },
   { csv: 'PrimaryKey',      prop: 'primary_key',            type: 'string' },
   { csv: 'acctlast4',       prop: 'last_4_account_digits',  type: 'string' },
   { csv: 'CIFNum',          prop: 'cif_number',             type: 'string' },
@@ -125,6 +130,7 @@ const LOANS_FIELDS = [
 
 // CD CSV → Time Deposits (custom object 2-60442980).
 const CD_FIELDS = [
+  { csv: null,            prop: 'account_key',              type: 'string', derived: true },
   { csv: 'PrimaryKey',    prop: 'primary_key',              type: 'string' },
   { csv: 'AcctLast4',     prop: 'last_4_account_digits',    type: 'string' },
   { csv: 'CIFNum',        prop: 'cif_number',               type: 'string' },
@@ -156,6 +162,49 @@ const DEBIT_CARDS_FIELDS = [
   // composite_key is generated (not in CSV) — handled specially in parser.
 ];
 
+/**
+ * Account-level grouping key.
+ *
+ * In the Silver Lake source files a single physical account appears as one row
+ * per owner — each row carrying its own per-owner `PrimaryKey` and a single-
+ * letter `relationship` code. PrimaryKey is therefore NOT an account-level
+ * identifier. To model one HubSpot record per physical account (with multiple
+ * labeled owner associations), we collapse owner rows onto this stable key.
+ *
+ * PROVISIONAL (plan Phase 2 — pending Ivan / mapping-doc sign-off): the key is
+ * branch + account type + last-4. Justin's worked DDA example identified the
+ * physical account by (branch 104, type D, last4 3509). These three props
+ * exist on all three account sources (DDA / Loans / CDs). If the mapping
+ * document defines a fuller account number, change ACCOUNT_KEY_COLUMNS here —
+ * it is the single source of truth for the grouping.
+ *
+ * Collision/over-merge guard: if any key component is missing on a row, we fall
+ * back to `PK:<primary_key>` so the row stays its own singleton account rather
+ * than being merged with other under-identified rows.
+ */
+const ACCOUNT_KEY_COLUMNS = ['branch_number', 'account_type', 'last_4_account_digits'];
+
+function buildAccountKey(mappedRow) {
+  const parts = ACCOUNT_KEY_COLUMNS.map(c => {
+    const v = mappedRow[c];
+    return v === null || v === undefined ? '' : String(v).trim();
+  });
+  if (parts.some(p => p === '')) {
+    const pk = mappedRow.primary_key;
+    return pk ? `PK:${String(pk).trim()}` : null;
+  }
+  return parts.join('|');
+}
+
+// The account sources that get owner-row collapse + a companion owner table
+// feeding the association engine. (Debit Cards are excluded — they are one row
+// per card and link to their single owner unlabeled.)
+const ACCOUNT_SOURCES = {
+  dda:   { staging: 'stg_deposits',      ownerStaging: 'stg_deposit_owners',      object: '2-60442978' },
+  loans: { staging: 'stg_loans',         ownerStaging: 'stg_loan_owners',         object: '2-60442977' },
+  cd:    { staging: 'stg_time_deposits', ownerStaging: 'stg_time_deposit_owners', object: '2-60442980' },
+};
+
 // Table name per source + destination HubSpot object ID.
 const TABLES = {
   cif: {
@@ -172,22 +221,25 @@ const TABLES = {
   dda: {
     csvFile: 'HubSpot_DDA.csv',
     staging: 'stg_deposits',
+    ownerStaging: 'stg_deposit_owners',
     object: '2-60442978',
-    idProperty: 'primary_key',
+    idProperty: 'account_key',
     fields: DDA_FIELDS,
   },
   loans: {
     csvFile: 'HubSpot_Loan.csv',
     staging: 'stg_loans',
+    ownerStaging: 'stg_loan_owners',
     object: '2-60442977',
-    idProperty: 'primary_key',
+    idProperty: 'account_key',
     fields: LOANS_FIELDS,
   },
   cd: {
     csvFile: 'HubSpot_CD.csv',
     staging: 'stg_time_deposits',
+    ownerStaging: 'stg_time_deposit_owners',
     object: '2-60442980',
-    idProperty: 'primary_key',
+    idProperty: 'account_key',
     fields: CD_FIELDS,
   },
   debit_cards: {
@@ -233,5 +285,8 @@ module.exports = {
   LOANS_FIELDS,
   CD_FIELDS,
   DEBIT_CARDS_FIELDS,
+  ACCOUNT_KEY_COLUMNS,
+  ACCOUNT_SOURCES,
+  buildAccountKey,
   classifyCifRow,
 };

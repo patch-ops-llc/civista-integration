@@ -30,12 +30,16 @@ const TABLES_TO_TRUNCATE = [
   'mapping_issues',
   'hubspot_id_map',
   'shipped_records',
+  'shipped_associations',
   'stg_contacts',
   'stg_companies',
   'stg_deposits',
   'stg_loans',
   'stg_time_deposits',
   'stg_debit_cards',
+  'stg_deposit_owners',
+  'stg_loan_owners',
+  'stg_time_deposit_owners',
 ];
 
 async function getCurrentPortalId() {

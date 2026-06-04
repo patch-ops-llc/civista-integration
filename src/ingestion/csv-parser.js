@@ -7,8 +7,10 @@ const {
   TABLES,
   CIF_CONTACT_FIELDS,
   CIF_COMPANY_FIELDS,
+  buildAccountKey,
   classifyCifRow,
 } = require('../transform/hubspot-mapping');
+const { normalizeCode, PRIMARY_OWNER_CODE } = require('../transform/relationship-map');
 const loud = require('../monitoring/loud');
 
 /**
@@ -204,6 +206,13 @@ async function parseAndStage(filePath, source) {
 
   // Buckets to collect rows per target staging table.
   const buckets = {};
+  // For account sources (DDA / Loans / CDs) the same physical account appears
+  // as one CSV row per owner. We collect every owner row here and, at end,
+  // collapse them onto one account record per account_key while keeping every
+  // owner row for the association engine (Option B — one record per physical
+  // account with multiple labeled owner associations).
+  const accountEntries = [];
+  const isAccountSource = !!(TABLES[source] && TABLES[source].ownerStaging);
   const unclassified = [];  // raw rows that classifyCifRow returns 'unclassified' for
   let rowCount = 0;
 
@@ -268,11 +277,61 @@ async function parseAndStage(filePath, source) {
       }
       mapped.row_hash = rowHash;
       mapped.raw_csv = rawRow;
+
+      if (isAccountSource) {
+        // Derive the account-level key and collect for end-of-parse collapse.
+        mapped.account_key = buildAccountKey(mapped);
+        accountEntries.push({
+          mapped,
+          accountKey: mapped.account_key,
+          code: normalizeCode(mapped.relationship),
+        });
+        return;
+      }
+
       (buckets[config.staging] ||= []).push(mapped);
     });
 
     parser.on('end', async () => {
       try {
+        // Collapse account owner-rows into one record per physical account, and
+        // stage the full owner list separately for the association engine.
+        if (isAccountSource && accountEntries.length > 0) {
+          const config = TABLES[source];
+          const groups = new Map();
+          let nullKeyGroupSeq = 0;
+          for (const e of accountEntries) {
+            // Rows with no derivable account key become their own singleton
+            // group so we never merge under-identified accounts. The record
+            // keeps account_key = null and is quarantined downstream (loud) by
+            // the existing null-key path.
+            const gkey = e.accountKey != null ? e.accountKey : `__nullkey_${nullKeyGroupSeq++}`;
+            let g = groups.get(gkey);
+            if (!g) { g = []; groups.set(gkey, g); }
+            g.push(e);
+          }
+          const accountRows = [];
+          const ownerRows = [];
+          for (const entries of groups.values()) {
+            // Canonical row = primary owner (code 'P') if present, else first.
+            const canonical = entries.find(e => e.code === PRIMARY_OWNER_CODE) || entries[0];
+            accountRows.push(canonical.mapped);
+            for (const e of entries) {
+              ownerRows.push({
+                account_key: e.accountKey,
+                cif_number: e.mapped.cif_number,
+                relationship: e.mapped.relationship,
+                primary_key: e.mapped.primary_key,
+                row_hash: e.mapped.row_hash,
+                raw_csv: e.mapped.raw_csv,
+              });
+            }
+          }
+          buckets[config.staging] = accountRows;
+          await insertRows(config.ownerStaging, ownerRows);
+          console.log(`Collapsed ${accountEntries.length} ${source} owner rows into ${accountRows.length} accounts; staged ${ownerRows.length} owner links into ${config.ownerStaging}`);
+        }
+
         const byTable = {};
         for (const [table, rows] of Object.entries(buckets)) {
           await insertRows(table, rows);

@@ -29,9 +29,9 @@ Silver Lake CSVs → SFTP/Upload → /incoming/
 | File | Records (prod) | HubSpot Target | CIF Column | Primary Key |
 |------|----------------|----------------|------------|-------------|
 | CIF | ~261k | Contacts + Companies | CIFNum | CIFNum |
-| DDA | ~250k | Custom: 2-60442978 | CIF# | PrimaryKey (pre-hashed) |
-| Loans | ~92k | Custom: 2-60442977 | CIFNum | PrimaryKey (pre-hashed) |
-| CDs | ~39k | Custom: 2-60442980 | CIFNum | PrimaryKey (pre-hashed) |
+| DDA | ~250k | Custom: 2-60442978 | CIF# | account_key (branch\|type\|last4); collapses owner rows |
+| Loans | ~92k | Custom: 2-60442977 | CIFNum | account_key (branch\|type\|last4); collapses owner rows |
+| CDs | ~39k | Custom: 2-60442980 | CIFNum | account_key (branch\|type\|last4); collapses owner rows |
 | Debit Cards | ~76k | Custom: 2-60442979 | CIF# | Composite (generated) |
 
 ## CIF Classification Rules
@@ -72,9 +72,20 @@ Silver Lake CSVs → SFTP/Upload → /incoming/
 9. Health and monitoring endpoint
 10. SFTP receiver
 
+## Account model & associations (built)
+
+Deposits, Loans, and Time Deposits use a **deduplicated account model**: the source has one
+row per owner for a given physical account, so rows are collapsed onto one HubSpot record
+keyed by `account_key` (`branch_number | account_type | last_4_account_digits` — see
+`buildAccountKey` in `src/transform/hubspot-mapping.js`; provisional pending mapping-doc
+sign-off). All owner rows are kept in `stg_*_owners` and become labeled owner associations
+(`src/sync/associations.js`), using Ivan's relationship-code legend
+(`src/transform/relationship-map.js`) resolved to portal type IDs
+(`src/sync/association-labels.js`). Debit Cards link to their single owner unlabeled.
+Idempotency via `shipped_associations`. See `docs/operations-runbook.md`.
+
 ## NOT in scope
 
-- Associations (deferred)
 - Enum mappings for acctstatus, CardStatus, relationship
 - Frontend dashboard
 - Civista-side infrastructure

@@ -17,6 +17,13 @@ if (!API_KEY) {
 const PROPERTIES = [
   { objectType: 'contacts',    name: 'cif_number',    groupName: 'contactinformation', label: 'CIF Number' },
   { objectType: 'companies',   name: 'cif_number',    groupName: 'companyinformation', label: 'CIF Number' },
+  // account_key is the account-level upsert identity for the three account
+  // objects (one HubSpot record per physical account; multiple owners are
+  // attached as labeled associations). primary_key stays as a (now non-keying)
+  // attribute carried from the canonical/primary-owner row.
+  { objectType: '2-60442978',  name: 'account_key',   groupName: 'deposits_information', label: 'Account Key' },
+  { objectType: '2-60442977',  name: 'account_key',   groupName: 'loans_information',    label: 'Account Key' },
+  { objectType: '2-60442980',  name: 'account_key',   groupName: 'time_deposits_information', label: 'Account Key' },
   { objectType: '2-60442978',  name: 'primary_key',   groupName: 'deposits_information', label: 'Primary Key' },
   { objectType: '2-60442977',  name: 'primary_key',   groupName: 'loans_information',    label: 'Primary Key' },
   { objectType: '2-60442980',  name: 'primary_key',   groupName: 'time_deposits_information', label: 'Primary Key' },

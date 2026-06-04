@@ -8,8 +8,15 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   connectionTimeoutMillis: 2000,
   idleTimeoutMillis: 30000,
-  // Cap any single statement at 5s so a wedged query doesn't tie up the pool.
-  statement_timeout: 5000,
+  // Per-statement ceiling. This MUST be large enough for the nightly bulk
+  // workload: the diff-engine anti-join + row pull runs over the full staging
+  // table (232k+ contacts, 252k+ deposits at production scale). The previous
+  // 5s value was sized for the 50-row UAT dataset and silently killed the
+  // first real run — contacts timed out mid-diff and the whole CIF file was
+  // quarantined. 10 minutes leaves generous headroom for a slow/IO-bound DB
+  // while still bounding a genuinely wedged query. /health does NOT rely on
+  // this cap to stay responsive — it has its own 2s Promise.race in index.js.
+  statement_timeout: 600000,
 });
 
 /**
@@ -295,6 +302,25 @@ async function initDb() {
       await client.query(`CREATE INDEX IF NOT EXISTS idx_${t}_needs_review ON ${t}(needs_review) WHERE needs_review = true`);
     }
 
+    // Index the per-table unique key used for all WHERE <key> = $1 lookups
+    // (coercion-audit UPDATE in syncRows, HASH C verify UPDATE, and the
+    // diff-engine join). Without these, every per-row UPDATE on a 232k+ row
+    // staging table is a sequential scan, making the pre-batch transform
+    // O(n^2) — the first full-scale run sat in that loop for hours and never
+    // reached the HubSpot batch upsert. These turn each lookup into a single
+    // index probe.
+    const STAGING_KEY_COLUMNS = {
+      stg_contacts: 'cif_number',
+      stg_companies: 'cif_number',
+      stg_deposits: 'primary_key',
+      stg_loans: 'primary_key',
+      stg_time_deposits: 'primary_key',
+      stg_debit_cards: 'composite_key',
+    };
+    for (const [t, col] of Object.entries(STAGING_KEY_COLUMNS)) {
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_${t}_key ON ${t}(${col})`);
+    }
+
     // Account custom objects (DDA, Loans, Time Deposits) now sync the
     // CSV `relationship` column (P/C/M/B/X) to a HubSpot enumeration of
     // the same name. The picklist is created by scripts/repair_demo_schema.js.
@@ -304,6 +330,49 @@ async function initDb() {
     for (const t of ['stg_deposits', 'stg_loans', 'stg_time_deposits']) {
       await client.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS relationship VARCHAR(8)`);
     }
+
+    // Account-level dedup model (Option B): a single physical account appears
+    // as one source row per owner. We collapse owner rows onto one record per
+    // account_key (see buildAccountKey in hubspot-mapping.js) and use
+    // account_key as the HubSpot upsert identity for the three account objects.
+    // The companion *_owners tables retain every owner row (account_key +
+    // owner CIF + relationship code) to feed the association engine.
+    for (const t of ['stg_deposits', 'stg_loans', 'stg_time_deposits']) {
+      await client.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS account_key TEXT`);
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_${t}_account_key ON ${t}(account_key)`);
+    }
+
+    const OWNER_TABLES = ['stg_deposit_owners', 'stg_loan_owners', 'stg_time_deposit_owners'];
+    for (const t of OWNER_TABLES) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ${t} (
+          id SERIAL PRIMARY KEY,
+          account_key TEXT,
+          cif_number TEXT,
+          relationship VARCHAR(8),
+          primary_key TEXT,
+          row_hash VARCHAR(64),
+          raw_csv JSONB,
+          loaded_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `);
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_${t}_account_key ON ${t}(account_key)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_${t}_cif ON ${t}(cif_number)`);
+    }
+
+    // Idempotency ledger for created associations. Keyed on the full directed
+    // labeled edge so a nightly run never recreates an existing link.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS shipped_associations (
+        from_object VARCHAR(20) NOT NULL,
+        from_id     VARCHAR(50) NOT NULL,
+        to_object   VARCHAR(20) NOT NULL,
+        to_id       VARCHAR(50) NOT NULL,
+        type_id     INTEGER     NOT NULL,
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (from_object, from_id, to_object, to_id, type_id)
+      );
+    `);
 
     // Meta table for sandbox<->prod portal cutover safeguard. Stores the
     // last HubSpot portal id we ran against so the boot check can refuse
