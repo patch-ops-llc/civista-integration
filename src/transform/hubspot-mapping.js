@@ -102,9 +102,13 @@ const DDA_FIELDS = [
   { csv: 'acctstatus',    prop: 'deposit_account_status',   type: 'enumeration' },
   { csv: 'promocode',     prop: 'promo_code',               type: 'string' },
   { csv: 'openonline',    prop: 'opened_online_yn',         type: 'bool', coerce: 'yn_to_bool' },
-  // Source values P/C/M/B/X arrive trimmed (csv-parser.js:176). HubSpot picklist
-  // defined in scripts/repair_demo_schema.js with descriptive labels.
-  { csv: 'relationship',  prop: 'relationship',             type: 'enumeration' },
+  // NOTE: per-owner `relationship` is intentionally NOT sent as an account
+  // property. Under the Option B dedup model one account record has many
+  // owners, each with their own relationship — that belongs on the labeled
+  // owner associations (relationship-map.js), not as a single ambiguous enum
+  // on the account. The raw code is still preserved per owner in raw_csv and
+  // in the stg_*_owners tables. (HubSpot's picklist also only allowed
+  // P/C/M/B/X, so real codes like W/D 400'd the whole batch.)
 ];
 
 // Loans CSV → Loans (custom object 2-60442977).
@@ -125,7 +129,7 @@ const LOANS_FIELDS = [
   { csv: 'officrcode',      prop: 'officer_name',           type: 'string' },
   { csv: 'acctstatus',      prop: 'loan_status',            type: 'enumeration' },
   { csv: 'origbal',         prop: 'original_balance',       type: 'number' },
-  { csv: 'relationship',    prop: 'relationship',           type: 'enumeration' },
+  // per-owner relationship lives on owner associations, not the account (see DDA note)
 ];
 
 // CD CSV → Time Deposits (custom object 2-60442980).
@@ -145,7 +149,7 @@ const CD_FIELDS = [
   { csv: 'officrcode',    prop: 'officer_name',             type: 'string' },
   { csv: 'acctstatus',    prop: 'time_deposit_status',      type: 'enumeration' },
   { csv: 'openonline',    prop: 'opened_online_yn',         type: 'bool', coerce: 'yn_to_bool' },
-  { csv: 'relationship',  prop: 'relationship',             type: 'enumeration' },
+  // per-owner relationship lives on owner associations, not the account (see DDA note)
 ];
 
 // Debit Card CSV → Debit Cards (custom object 2-60442979).
