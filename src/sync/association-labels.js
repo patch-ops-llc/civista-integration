@@ -37,23 +37,32 @@ async function fetchAssociationLabels(fromObjectType, toObjectType) {
 function buildLabelIndex(results) {
   const byLabel = new Map();
   let defaultTypeId = null;
+  // The unlabeled type's category is portal/pair-specific: for custom-object →
+  // contact/company pairs HubSpot reports it as USER_DEFINED, NOT
+  // HUBSPOT_DEFINED. Sending the wrong category is rejected with "association
+  // types ... don't match specified object types & direction", so we capture
+  // the real category and send it back verbatim.
+  let defaultCategory = null;
   for (const r of results) {
     if (r.label === null || r.label === undefined) {
       // The unlabeled association for this pair. Prefer a HUBSPOT_DEFINED
       // entry but accept whatever the API returns as the null-label type.
       if (defaultTypeId === null || r.category === 'HUBSPOT_DEFINED') {
         defaultTypeId = r.typeId;
+        defaultCategory = r.category || null;
       }
     } else {
       byLabel.set(r.label, r.typeId);
     }
   }
-  return { byLabel, defaultTypeId };
+  return { byLabel, defaultTypeId, defaultCategory };
 }
 
 /**
  * Cached label index for a directed pair. The category to send alongside a
- * labeled type is always USER_DEFINED; for the default it's HUBSPOT_DEFINED.
+ * labeled type is always USER_DEFINED; for the default/unlabeled type use the
+ * captured `defaultCategory` (the API reports USER_DEFINED for these
+ * custom-object pairs).
  */
 async function getLabelIndex(fromObjectType, toObjectType) {
   const key = `${fromObjectType}:${toObjectType}`;

@@ -323,7 +323,9 @@ async function syncDebitCardAssociations({ runId } = {}) {
         fromId: cardId,
         toId: ownerId,
         typeId,
-        category: 'HUBSPOT_DEFINED',
+        // Use the category HubSpot actually reports for the unlabeled type
+        // (USER_DEFINED for these custom-object pairs), not a hardcoded guess.
+        category: idx[kind].defaultCategory || 'HUBSPOT_DEFINED',
       };
     };
 
