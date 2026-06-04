@@ -175,15 +175,14 @@ function buildPayload(row, fields) {
     if (f.coerce === 'email_strict') {
       const r = coerceEmailForHubSpot(raw);
       if (r.problem) {
-        // Suspect — caller will isolate the row in a 1-row batch so the
-        // failure doesn't poison 99 valid records.
-        suspectKeys.add(prop);
+        // Unparseable email → OMIT the property (raw still preserved in raw_csv).
+        // HubSpot batch upsert is all-or-nothing: sending a known-invalid value
+        // (e.g. "No Email", "n/a", a bare domain) gets the whole 100-row batch
+        // rejected with INVALID_EMAIL, destroying 99 valid records with it.
+        // Mirrors the date_only handling above; the suspect_email warning still
+        // fires for data-quality visibility.
         problems.push({ csv, prop, raw, problem: r.problem });
-        // Still attempt to send the raw value so HubSpot's own rejection is the
-        // authoritative signal. The 1-row batch isolation ensures only this row
-        // dies if HubSpot also rejects.
-        props[prop] = String(raw).trim();
-        continue;
+        continue; // omit; raw still in raw_csv
       }
       if (r.value !== raw) {
         coercions.push({ prop, csv, from: raw, to: r.value, coerce: 'email_strict' });
