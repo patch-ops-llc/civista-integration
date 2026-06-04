@@ -137,7 +137,7 @@ app.use((req, res, next) => {
 app.get('/api/info', (req, res) => {
   res.json({
     service: 'civista-integration',
-    version: '1.0.0',
+    version: '1.1.0',
     description: 'Civista Bank HubSpot nightly data sync pipeline',
     features: {
       wire_log: ENABLE_WIRE_LOG,
