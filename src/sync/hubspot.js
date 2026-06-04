@@ -275,19 +275,61 @@ async function batchUpsert(objectType, idProperty, inputs, opts = {}) {
           });
         }
       }
+    } else if (batch.length > 1) {
+      // Batch rejected as a unit (HubSpot batch upsert is all-or-nothing).
+      // Retry one record at a time so a single bad row (e.g. a shared-email
+      // 409) doesn't sink the other 99 valid records.
+      const sub = await batchUpsert(objectType, idProperty, batch, { ...opts, batchSize: 1 });
+      for (const s of sub.succeeded) succeeded.push(s);
+      for (const f of sub.failed) failed.push(f);
     } else {
-      const errMsg = response.body?.message || response.body?.raw || `HTTP ${response.status}`;
-      // Whole batch rejected → alarm once with the body, then mark every input failed.
+      // Single record still failing.
+      const only = batch[0];
+      const status = response.status;
+      const errMsg = response.body?.message || response.body?.raw || `HTTP ${status}`;
+      const sk = only?.properties?.[idProperty];
+
+      // Contact email-uniqueness collision: HubSpot returns 409 when this CIF's
+      // email already belongs to another contact (spouses/family/joint accounts
+      // commonly share one email). Retry once WITHOUT the email so the contact
+      // still syncs by its idProperty; the email is preserved in raw_csv and
+      // kept on whichever CIF reached HubSpot first.
+      if (status === 409 && only?.properties && only.properties.email !== undefined) {
+        const retryProps = { ...only.properties };
+        delete retryProps.email;
+        let retry;
+        try {
+          retry = await hubspotFetch(`/crm/v3/objects/${objectType}/batch/upsert`, {
+            method: 'POST',
+            body: JSON.stringify({ inputs: [{ ...only, properties: retryProps }], idProperty }),
+          });
+        } catch (e) { retry = null; }
+        const r = retry && retry.ok && Array.isArray(retry.body?.results) ? retry.body.results[0] : null;
+        if (r && r.properties?.[idProperty]) {
+          succeeded.push({ sourceKey: r.properties[idProperty], hubspotId: r.id, wasNew: !!r.new });
+          await loud.warn({
+            event: 'contact_email_collision',
+            message: `${sourceTable || objectType} ${idProperty}=${sk}: email already owned by another contact — synced without email`,
+            runId, sourceTable, sourceKey: sk,
+          });
+          continue;
+        }
+      }
+
       await loud.alarm({
         event: 'hubspot_batch_failed',
-        message: `Batch ${objectType} [${i}-${i+batch.length}] rejected ${response.status}: ${errMsg}`,
+        message: `Record ${objectType} ${idProperty}=${sk} rejected ${status}: ${errMsg}`,
         runId, sourceTable,
-        context: { batchSize: batch.length, status: response.status, sentKeys: [...sentKeys].slice(0, 5) },
+        context: { status, sentKeys: [...sentKeys].slice(0, 5) },
       });
-      for (const k of sentKeys) failed.push({ sourceKey: k, reason: `HubSpot ${response.status}: ${errMsg}` });
+      for (const k of sentKeys) failed.push({ sourceKey: k, reason: `HubSpot ${status}: ${errMsg}` });
     }
 
-    console.log(`Batch upsert ${objectType} [${i}-${i + batch.length}]: running totals ok=${succeeded.length} failed=${failed.length}`);
+    // Only log running totals for real (multi-record) batches — the per-record
+    // fallback would otherwise flood the log with one line per record.
+    if (batch.length > 1) {
+      console.log(`Batch upsert ${objectType} [${i}-${i + batch.length}]: running totals ok=${succeeded.length} failed=${failed.length}`);
+    }
   }
 
   return { succeeded, failed };
