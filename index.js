@@ -144,6 +144,12 @@ app.get('/api/info', (req, res) => {
       schema_check: ENABLE_SCHEMA_CHECK,
       manual_sync: !!MANUAL_SYNC_TOKEN,
     },
+    // Running build — lets operators confirm a redeploy has actually landed
+    // before triggering deploy-gated actions. Railway injects these.
+    build: {
+      commit: process.env.RAILWAY_GIT_COMMIT_SHA || null,
+      deploymentId: process.env.RAILWAY_DEPLOYMENT_ID || null,
+    },
   });
 });
 
