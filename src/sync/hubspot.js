@@ -224,6 +224,38 @@ function validateBatchInputs(inputs, idProperty) {
 }
 
 /**
+ * Determine which propertie(s) HubSpot rejected on a failed single-record
+ * upsert, so the caller can strip just those and retry instead of dropping the
+ * whole record. Returns a Set of property names.
+ *
+ *  - 409 (CONFLICT): contact email-uniqueness collision — the offending
+ *    property is always `email`.
+ *  - 400 (VALIDATION_ERROR): HubSpot embeds the offending property name(s) in
+ *    the message string as `"name":"<prop>"` (e.g. INVALID_EMAIL on `email`,
+ *    INVALID_OPTION on `tax_id_type`). Some responses also expose a structured
+ *    `errors` array. Parse both.
+ */
+function collectOffendingProps(status, body, only) {
+  const props = new Set();
+
+  if (status === 409 && only?.properties?.email !== undefined) {
+    props.add('email');
+  }
+
+  const msg = body?.message || body?.raw || '';
+  if (typeof msg === 'string') {
+    const re = /"name"\s*:\s*"([^"]+)"/g;
+    let m;
+    while ((m = re.exec(msg)) !== null) props.add(m[1]);
+  }
+  if (Array.isArray(body?.errors)) {
+    for (const e of body.errors) if (e && e.name) props.add(e.name);
+  }
+
+  return props;
+}
+
+/**
  * Batch upsert. Returns per-input outcome:
  *   succeeded: [{ sourceKey, hubspotId, wasNew }]
  *   failed:    [{ sourceKey, reason }]
@@ -283,20 +315,29 @@ async function batchUpsert(objectType, idProperty, inputs, opts = {}) {
       for (const s of sub.succeeded) succeeded.push(s);
       for (const f of sub.failed) failed.push(f);
     } else {
-      // Single record still failing.
+      // Single record still failing. Rather than dropping the whole record
+      // (silent data loss), figure out which propertie(s) HubSpot is rejecting,
+      // strip ONLY those, and retry once so the record still syncs by its
+      // idProperty. The stripped raw values stay in raw_csv. Covers:
+      //   409 email-uniqueness collision — spouses/family/joint accounts share
+      //       one email; HubSpot enforces unique contact email.
+      //   400 INVALID_EMAIL — malformed addresses our pre-validator can't catch
+      //       (trailing comma, bad TLD like ".comq"/".met").
+      //   400 INVALID_OPTION — a source enum value not in HubSpot's picklist
+      //       (e.g. tax_id_type="E", which isn't in [I,T,M,A,C,N,O,R]).
       const only = batch[0];
       const status = response.status;
       const errMsg = response.body?.message || response.body?.raw || `HTTP ${status}`;
       const sk = only?.properties?.[idProperty];
 
-      // Contact email-uniqueness collision: HubSpot returns 409 when this CIF's
-      // email already belongs to another contact (spouses/family/joint accounts
-      // commonly share one email). Retry once WITHOUT the email so the contact
-      // still syncs by its idProperty; the email is preserved in raw_csv and
-      // kept on whichever CIF reached HubSpot first.
-      if (status === 409 && only?.properties && only.properties.email !== undefined) {
+      const offending = collectOffendingProps(status, response.body, only);
+      offending.delete(idProperty); // never strip the record's identity
+      if (CUSTOM_OBJECTS_REQUIRING_NAME.has(objectType)) offending.delete('name'); // required
+      const strippable = [...offending].filter(p => only?.properties?.[p] !== undefined);
+
+      if (strippable.length > 0) {
         const retryProps = { ...only.properties };
-        delete retryProps.email;
+        for (const p of strippable) delete retryProps[p];
         let retry;
         try {
           retry = await hubspotFetch(`/crm/v3/objects/${objectType}/batch/upsert`, {
@@ -308,9 +349,10 @@ async function batchUpsert(objectType, idProperty, inputs, opts = {}) {
         if (r && r.properties?.[idProperty]) {
           succeeded.push({ sourceKey: r.properties[idProperty], hubspotId: r.id, wasNew: !!r.new });
           await loud.warn({
-            event: 'contact_email_collision',
-            message: `${sourceTable || objectType} ${idProperty}=${sk}: email already owned by another contact — synced without email`,
+            event: 'record_synced_without_props',
+            message: `${sourceTable || objectType} ${idProperty}=${sk}: HubSpot rejected [${strippable.join(', ')}] — synced without them (raw preserved in raw_csv)`,
             runId, sourceTable, sourceKey: sk,
+            context: { strippedProps: strippable, status },
           });
           continue;
         }

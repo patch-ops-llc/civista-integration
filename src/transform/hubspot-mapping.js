@@ -102,13 +102,15 @@ const DDA_FIELDS = [
   { csv: 'acctstatus',    prop: 'deposit_account_status',   type: 'enumeration' },
   { csv: 'promocode',     prop: 'promo_code',               type: 'string' },
   { csv: 'openonline',    prop: 'opened_online_yn',         type: 'bool', coerce: 'yn_to_bool' },
-  // NOTE: per-owner `relationship` is intentionally NOT sent as an account
-  // property. Under the Option B dedup model one account record has many
-  // owners, each with their own relationship — that belongs on the labeled
-  // owner associations (relationship-map.js), not as a single ambiguous enum
-  // on the account. The raw code is still preserved per owner in raw_csv and
-  // in the stg_*_owners tables. (HubSpot's picklist also only allowed
-  // P/C/M/B/X, so real codes like W/D 400'd the whole batch.)
+  // per-owner `relationship` MUST stay in the mapping so the parser captures
+  // it (owner-table labels + canonical primary-owner selection depend on
+  // mapped.relationship), but `send: false` keeps it OFF the account payload.
+  // Under the Option B dedup model one account has many owners each with their
+  // own relationship — that belongs on the labeled owner associations
+  // (relationship-map.js), not as a single ambiguous enum on the account.
+  // (HubSpot's account picklist also only allowed P/C/M/B/X, so real codes
+  // like W/D would 400 the whole batch.)
+  { csv: 'relationship',  prop: 'relationship',             type: 'enumeration', send: false },
 ];
 
 // Loans CSV → Loans (custom object 2-60442977).
@@ -129,7 +131,8 @@ const LOANS_FIELDS = [
   { csv: 'officrcode',      prop: 'officer_name',           type: 'string' },
   { csv: 'acctstatus',      prop: 'loan_status',            type: 'enumeration' },
   { csv: 'origbal',         prop: 'original_balance',       type: 'number' },
-  // per-owner relationship lives on owner associations, not the account (see DDA note)
+  // captured for owner associations / primary-owner selection; not sent to HubSpot (see DDA note)
+  { csv: 'relationship',    prop: 'relationship',           type: 'enumeration', send: false },
 ];
 
 // CD CSV → Time Deposits (custom object 2-60442980).
@@ -149,7 +152,8 @@ const CD_FIELDS = [
   { csv: 'officrcode',    prop: 'officer_name',             type: 'string' },
   { csv: 'acctstatus',    prop: 'time_deposit_status',      type: 'enumeration' },
   { csv: 'openonline',    prop: 'opened_online_yn',         type: 'bool', coerce: 'yn_to_bool' },
-  // per-owner relationship lives on owner associations, not the account (see DDA note)
+  // captured for owner associations / primary-owner selection; not sent to HubSpot (see DDA note)
+  { csv: 'relationship',  prop: 'relationship',             type: 'enumeration', send: false },
 ];
 
 // Debit Card CSV → Debit Cards (custom object 2-60442979).
