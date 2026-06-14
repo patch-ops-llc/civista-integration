@@ -12,6 +12,7 @@ const {
   normalizeEmail,
   coerceDateForHubSpot,
   coerceEmailForHubSpot,
+  coerceZip,
 } = require('../transform/normalize');
 const loud = require('../monitoring/loud');
 const { emitHubspot } = require('../monitoring/event-stream');
@@ -168,6 +169,15 @@ function buildPayload(row, fields) {
       }
       if (r.value !== null && r.value !== undefined && r.value !== raw) {
         coercions.push({ prop, csv, from: raw, to: r.value, coerce: 'date_only' });
+      }
+      props[prop] = r.value;
+      continue;
+    }
+    if (f.coerce === 'zip_format') {
+      const r = coerceZip(raw);
+      if (r.value === null) continue; // empty after trim → omit
+      if (r.value !== raw) {
+        coercions.push({ prop, csv, from: raw, to: r.value, coerce: 'zip_format' });
       }
       props[prop] = r.value;
       continue;

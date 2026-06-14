@@ -44,6 +44,37 @@ function coerceEmailForHubSpot(val) {
   return { value: null, problem: `unparseable email: "${preview}"` };
 }
 
+/**
+ * Format a US ZIP code for display.
+ *
+ * Silver Lake exports ZIP+4 as 9 consecutive digits ("448705016"), which
+ * HubSpot stores verbatim and shows as one long number. The client wants the
+ * canonical hyphenated form ("44870-5016"). We only reshape a clean 9-digit
+ * value:
+ *   - "448705016" → "44870-5016"  (real +4 add-on)
+ *   - "448700000" → "44870"        (trailing "0000" is a padded placeholder,
+ *                                   not a real +4 — collapse to the 5-digit ZIP
+ *                                   instead of showing a meaningless "-0000")
+ * Anything else (5-digit, already-hyphenated, foreign/PO formats) is passed
+ * through untouched. Per memory financial_data_rules.md the raw value is still
+ * preserved verbatim in raw_csv on the staging row — this only shapes the value
+ * sent to HubSpot.
+ *
+ * Returns { value } (no `problem` case — we never reject a ZIP, just leave
+ * unrecognized shapes as-is).
+ */
+function coerceZip(val) {
+  if (val === null || val === undefined) return { value: null };
+  const raw = String(val).trim();
+  if (raw === '') return { value: null };
+  if (/^\d{9}$/.test(raw)) {
+    const five = raw.slice(0, 5);
+    const plus4 = raw.slice(5);
+    return { value: plus4 === '0000' ? five : `${five}-${plus4}` };
+  }
+  return { value: raw };
+}
+
 function normalizeBoolean(val) {
   if (!val) return false;
   return val.trim().toUpperCase() === 'Y';
@@ -123,4 +154,5 @@ module.exports = {
   normalizeDate,
   coerceDateForHubSpot,
   coerceEmailForHubSpot,
+  coerceZip,
 };

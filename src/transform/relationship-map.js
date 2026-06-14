@@ -6,13 +6,19 @@
  * Beneficiary; H = BENEFICIARY; M = TRUSTEE) — guessing would mislabel
  * relationships on a financial system, so this map is authoritative.
  *
- * HubSpot association labels were configured per object x owner-kind with these
- * exact strings:
- *   - Contacts:  "<NAME> <SUFFIX>"            e.g. "PRIMARY OWNER DDA"
- *   - Companies: "<NAME> <SUFFIX> Company"    e.g. "PRIMARY OWNER DDA Company"
- * where SUFFIX is DDA / Loan / CD. `labelFor()` reproduces those strings so the
- * association engine can match them to the live association-type IDs pulled
- * from HubSpot (see src/sync/associations.js + scripts/pull-association-labels.js).
+ * Association label scheme (updated per Civista data review, Jun 2026):
+ * labels are now just the bare relationship name — e.g. "PRIMARY OWNER",
+ * "CO-OWNER" — with NO product suffix and NO " Company" suffix. The old scheme
+ * ("PRIMARY OWNER DDA", "PRIMARY OWNER DDA Company") made the same role read
+ * differently per account product and per owner kind, which the client flagged
+ * as inconsistent. The relationship is the same regardless of which product or
+ * owner type it sits on, so one clean label is used everywhere.
+ *
+ * `labelFor()` returns that bare name so the association engine can match it to
+ * the live association-type IDs pulled from HubSpot (see src/sync/associations.js
+ * + scripts/pull-association-labels.js). The portal labels must be renamed to
+ * match — run scripts/rename-association-labels.js once to strip the suffixes
+ * from the existing labels (preserves type IDs and existing associations).
  */
 
 // code -> base relationship name (identical across all three account objects).
@@ -66,16 +72,21 @@ function normalizeCode(raw) {
 
 /**
  * Exact HubSpot association label for (source, ownerKind, code), or null if the
- * code/source is unknown. ownerKind is 'contact' or 'company'.
+ * code/source is unknown.
+ *
+ * The label is the bare relationship name (e.g. "PRIMARY OWNER") with no
+ * product or owner-kind suffix — the same role reads identically across DDA /
+ * Loan / CD and across contact / company owners. `source` is still validated
+ * against the known account sources so debit-card / unmapped sources don't
+ * accidentally get a labeled association; `ownerKind` is retained for signature
+ * stability but no longer changes the label.
  */
 function labelFor(source, ownerKind, code) {
-  const suffix = OBJECT_SUFFIX[source];
-  if (!suffix) return null;
+  if (!OBJECT_SUFFIX[source]) return null;
   const norm = normalizeCode(code);
   const name = norm ? RELATIONSHIP_NAMES[norm] : null;
   if (!name) return null;
-  const base = `${name} ${suffix}`;
-  return ownerKind === 'company' ? `${base} Company` : base;
+  return name;
 }
 
 module.exports = {

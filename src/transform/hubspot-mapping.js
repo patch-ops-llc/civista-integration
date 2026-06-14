@@ -12,6 +12,8 @@
  *   coerce:   (optional) explicitly authorize a transformation at send time.
  *             'date_only'    → strip time portion; raw datetime preserved in raw_csv
  *             'email_strict' → validate RFC-ish; suspect rows isolated in 1-row batches
+ *             'zip_format'   → reshape a 9-digit ZIP to ZIP+4 (448705016 → 44870-5016)
+ *             'yn_to_bool'   → Y/N string → boolean
  *             undefined      → DEFAULT. No coercion. Send the trimmed raw value as-is.
  *                              If HubSpot rejects, the rejection surfaces per record loudly.
  *
@@ -33,7 +35,7 @@ const CIF_COMMON = [
   { csv: 'Address1',            prop: 'address',                                 type: 'string' },
   { csv: 'City',                prop: 'city',                                    type: 'string' },
   { csv: 'State',               prop: 'state',                                   type: 'string' },
-  { csv: 'ZipCode',             prop: 'zip',                                     type: 'string' },
+  { csv: 'ZipCode',             prop: 'zip',                                     type: 'string', coerce: 'zip_format' },
   { csv: 'HashSSN',             prop: 'hashed_ssn',                              type: 'string' },
   { csv: 'DoNotCall',           prop: 'dnc_flag_yn',                             type: 'bool', coerce: 'yn_to_bool' },
   { csv: 'InsiderCode',         prop: 'insider_code',                            type: 'string' },
