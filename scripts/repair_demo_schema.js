@@ -48,9 +48,9 @@ const RELATIONSHIP_OPTIONS = [
 ];
 
 const ACCOUNT_OBJECTS = [
-  { object: '2-60442978', label: 'Deposits',      groupName: 'deposits_information' },
-  { object: '2-60442977', label: 'Loans',         groupName: 'loans_information' },
-  { object: '2-60442980', label: 'Time Deposits', groupName: 'time_deposits_information' },
+  { object: '2-60107989', label: 'Deposits',      groupName: 'deposits_information' },
+  { object: '2-60108336', label: 'Loans',         groupName: 'loans_information' },
+  { object: '2-60108759', label: 'Time Deposits', groupName: 'time_deposits_information' },
 ];
 
 // ---- HubSpot helpers ----

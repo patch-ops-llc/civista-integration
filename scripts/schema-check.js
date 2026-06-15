@@ -68,10 +68,10 @@ const pool = new Pool({ connectionString: DB_URL });
 const OBJECTS = [
   { stagingTable: 'stg_contacts',      hsObject: 'contacts',   csvFile: 'HubSpot_CIF.csv',        label: 'Contacts' },
   { stagingTable: 'stg_companies',     hsObject: 'companies',  csvFile: 'HubSpot_CIF.csv',        label: 'Companies' },
-  { stagingTable: 'stg_deposits',      hsObject: '2-60442978', csvFile: 'HubSpot_DDA.csv',        label: 'Deposits' },
-  { stagingTable: 'stg_loans',         hsObject: '2-60442977', csvFile: 'HubSpot_Loan.csv',       label: 'Loans' },
-  { stagingTable: 'stg_time_deposits', hsObject: '2-60442980', csvFile: 'HubSpot_CD.csv',         label: 'Time Deposits' },
-  { stagingTable: 'stg_debit_cards',   hsObject: '2-60442979', csvFile: 'HubSpot_Debit_Card.csv', label: 'Debit Cards' },
+  { stagingTable: 'stg_deposits',      hsObject: '2-60107989', csvFile: 'HubSpot_DDA.csv',        label: 'Deposits' },
+  { stagingTable: 'stg_loans',         hsObject: '2-60108336', csvFile: 'HubSpot_Loan.csv',       label: 'Loans' },
+  { stagingTable: 'stg_time_deposits', hsObject: '2-60108759', csvFile: 'HubSpot_CD.csv',         label: 'Time Deposits' },
+  { stagingTable: 'stg_debit_cards',   hsObject: '2-60107457', csvFile: 'HubSpot_Debit_Card.csv', label: 'Debit Cards' },
 ];
 
 function showCmd(cmd) {

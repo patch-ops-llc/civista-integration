@@ -140,7 +140,7 @@ async function initDb() {
       );
     `);
 
-    // --- Deposits (DDA CSV → custom object 2-60442978) ---
+    // --- Deposits (DDA CSV → custom object 2-60107989) ---
     await client.query(`
       CREATE TABLE IF NOT EXISTS stg_deposits (
         id SERIAL PRIMARY KEY,
@@ -166,7 +166,7 @@ async function initDb() {
       );
     `);
 
-    // --- Loans (custom object 2-60442977) ---
+    // --- Loans (custom object 2-60108336) ---
     await client.query(`
       CREATE TABLE IF NOT EXISTS stg_loans (
         id SERIAL PRIMARY KEY,
@@ -190,7 +190,7 @@ async function initDb() {
       );
     `);
 
-    // --- Time Deposits / CDs (custom object 2-60442980) ---
+    // --- Time Deposits / CDs (custom object 2-60108759) ---
     await client.query(`
       CREATE TABLE IF NOT EXISTS stg_time_deposits (
         id SERIAL PRIMARY KEY,
@@ -213,7 +213,7 @@ async function initDb() {
       );
     `);
 
-    // --- Debit Cards (custom object 2-60442979) ---
+    // --- Debit Cards (custom object 2-60107457) ---
     await client.query(`
       CREATE TABLE IF NOT EXISTS stg_debit_cards (
         id SERIAL PRIMARY KEY,

@@ -34,10 +34,10 @@ const INTERNAL_COLUMNS = new Set([
 // Custom-object types that have a required `name` property.
 // Per HubSpot schema: requiredProperties=['name'], primaryDisplayProperty='name'.
 const CUSTOM_OBJECTS_REQUIRING_NAME = new Set([
-  '2-60442978', // deposits
-  '2-60442977', // loans
-  '2-60442980', // time_deposits
-  '2-60442979', // debit_cards
+  '2-60107989', // deposits
+  '2-60108336', // loans
+  '2-60108759', // time_deposits
+  '2-60107457', // debit_cards
 ]);
 
 async function hubspotFetch(path, options = {}) {

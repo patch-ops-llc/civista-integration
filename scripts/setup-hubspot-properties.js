@@ -21,13 +21,13 @@ const PROPERTIES = [
   // objects (one HubSpot record per physical account; multiple owners are
   // attached as labeled associations). primary_key stays as a (now non-keying)
   // attribute carried from the canonical/primary-owner row.
-  { objectType: '2-60442978',  name: 'account_key',   groupName: 'deposits_information', label: 'Account Key' },
-  { objectType: '2-60442977',  name: 'account_key',   groupName: 'loans_information',    label: 'Account Key' },
-  { objectType: '2-60442980',  name: 'account_key',   groupName: 'time_deposits_information', label: 'Account Key' },
-  { objectType: '2-60442978',  name: 'primary_key',   groupName: 'deposits_information', label: 'Primary Key' },
-  { objectType: '2-60442977',  name: 'primary_key',   groupName: 'loans_information',    label: 'Primary Key' },
-  { objectType: '2-60442980',  name: 'primary_key',   groupName: 'time_deposits_information', label: 'Primary Key' },
-  { objectType: '2-60442979',  name: 'composite_key', groupName: 'debit_cards_information',   label: 'Composite Key' },
+  { objectType: '2-60107989',  name: 'account_key',   groupName: 'deposits_information', label: 'Account Key' },
+  { objectType: '2-60108336',  name: 'account_key',   groupName: 'loans_information',    label: 'Account Key' },
+  { objectType: '2-60108759',  name: 'account_key',   groupName: 'time_deposits_information', label: 'Account Key' },
+  { objectType: '2-60107989',  name: 'primary_key',   groupName: 'deposits_information', label: 'Primary Key' },
+  { objectType: '2-60108336',  name: 'primary_key',   groupName: 'loans_information',    label: 'Primary Key' },
+  { objectType: '2-60108759',  name: 'primary_key',   groupName: 'time_deposits_information', label: 'Primary Key' },
+  { objectType: '2-60107457',  name: 'composite_key', groupName: 'debit_cards_information',   label: 'Composite Key' },
 ];
 
 async function hs(method, path, body) {

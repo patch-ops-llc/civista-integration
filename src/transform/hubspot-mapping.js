@@ -81,7 +81,7 @@ const CIF_COMPANY_ONLY = [
 const CIF_CONTACT_FIELDS = [...CIF_COMMON, ...CIF_CONTACT_ONLY];
 const CIF_COMPANY_FIELDS = [...CIF_COMMON, ...CIF_COMPANY_ONLY];
 
-// DDA CSV → Deposits (custom object 2-60442978).
+// DDA CSV → Deposits (custom object 2-60107989).
 const DDA_FIELDS = [
   // account_key is the account-level upsert identity (one HubSpot record per
   // physical account; see ACCOUNT_KEY_COLUMNS / buildAccountKey). It is NOT a
@@ -115,7 +115,7 @@ const DDA_FIELDS = [
   { csv: 'relationship',  prop: 'relationship',             type: 'enumeration', send: false },
 ];
 
-// Loans CSV → Loans (custom object 2-60442977).
+// Loans CSV → Loans (custom object 2-60108336).
 const LOANS_FIELDS = [
   { csv: null,              prop: 'account_key',            type: 'string', derived: true },
   { csv: 'PrimaryKey',      prop: 'primary_key',            type: 'string' },
@@ -137,7 +137,7 @@ const LOANS_FIELDS = [
   { csv: 'relationship',    prop: 'relationship',           type: 'enumeration', send: false },
 ];
 
-// CD CSV → Time Deposits (custom object 2-60442980).
+// CD CSV → Time Deposits (custom object 2-60108759).
 const CD_FIELDS = [
   { csv: null,            prop: 'account_key',              type: 'string', derived: true },
   { csv: 'PrimaryKey',    prop: 'primary_key',              type: 'string' },
@@ -158,7 +158,7 @@ const CD_FIELDS = [
   { csv: 'relationship',  prop: 'relationship',             type: 'enumeration', send: false },
 ];
 
-// Debit Card CSV → Debit Cards (custom object 2-60442979).
+// Debit Card CSV → Debit Cards (custom object 2-60107457).
 const DEBIT_CARDS_FIELDS = [
   { csv: 'CIF#',             prop: 'cif_number',                       type: 'string' },
   { csv: 'Acctlast4',        prop: 'last_4_of_associated_account',     type: 'string' },
@@ -210,9 +210,9 @@ function buildAccountKey(mappedRow) {
 // feeding the association engine. (Debit Cards are excluded — they are one row
 // per card and link to their single owner unlabeled.)
 const ACCOUNT_SOURCES = {
-  dda:   { staging: 'stg_deposits',      ownerStaging: 'stg_deposit_owners',      object: '2-60442978' },
-  loans: { staging: 'stg_loans',         ownerStaging: 'stg_loan_owners',         object: '2-60442977' },
-  cd:    { staging: 'stg_time_deposits', ownerStaging: 'stg_time_deposit_owners', object: '2-60442980' },
+  dda:   { staging: 'stg_deposits',      ownerStaging: 'stg_deposit_owners',      object: '2-60107989' },
+  loans: { staging: 'stg_loans',         ownerStaging: 'stg_loan_owners',         object: '2-60108336' },
+  cd:    { staging: 'stg_time_deposits', ownerStaging: 'stg_time_deposit_owners', object: '2-60108759' },
 };
 
 // Table name per source + destination HubSpot object ID.
@@ -232,7 +232,7 @@ const TABLES = {
     csvFile: 'HubSpot_DDA.csv',
     staging: 'stg_deposits',
     ownerStaging: 'stg_deposit_owners',
-    object: '2-60442978',
+    object: '2-60107989',
     idProperty: 'account_key',
     fields: DDA_FIELDS,
   },
@@ -240,7 +240,7 @@ const TABLES = {
     csvFile: 'HubSpot_Loan.csv',
     staging: 'stg_loans',
     ownerStaging: 'stg_loan_owners',
-    object: '2-60442977',
+    object: '2-60108336',
     idProperty: 'account_key',
     fields: LOANS_FIELDS,
   },
@@ -248,14 +248,14 @@ const TABLES = {
     csvFile: 'HubSpot_CD.csv',
     staging: 'stg_time_deposits',
     ownerStaging: 'stg_time_deposit_owners',
-    object: '2-60442980',
+    object: '2-60108759',
     idProperty: 'account_key',
     fields: CD_FIELDS,
   },
   debit_cards: {
     csvFile: 'HubSpot_Debit_Card.csv',
     staging: 'stg_debit_cards',
-    object: '2-60442979',
+    object: '2-60107457',
     idProperty: 'composite_key',
     fields: DEBIT_CARDS_FIELDS,
   },

@@ -45,10 +45,10 @@ Before the first sync runs, you must set unique identifier properties on each cu
 |--------|------------------------|
 | Contacts | `cif_number` |
 | Companies | `cif_number` |
-| Deposits (2-60442978) | `primary_key` |
-| Loans (2-60442977) | `primary_key` |
-| Time Deposits (2-60442980) | `primary_key` |
-| Debit Cards (2-60442979) | `composite_key` |
+| Deposits (2-60107989) | `account_key` |
+| Loans (2-60108336) | `account_key` |
+| Time Deposits (2-60108759) | `account_key` |
+| Debit Cards (2-60107457) | `composite_key` |
 
 Without these unique identifiers, the upsert API creates new records instead of updating existing ones.
 

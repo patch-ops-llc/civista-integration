@@ -271,7 +271,7 @@ async function syncAccountAssociations(source, { runId } = {}) {
  * so we read stg_debit_cards directly rather than an owner table.
  */
 async function syncDebitCardAssociations({ runId } = {}) {
-  const DEBIT_OBJECT = '2-60442979';
+  const DEBIT_OBJECT = '2-60107457';
   const stats = { source: 'debit_cards', created: 0, skippedExisting: 0, unresolved: 0, failed: 0, samples: [] };
 
   let idx;

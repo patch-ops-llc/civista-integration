@@ -24,11 +24,11 @@ if (!API_KEY) {
 
 // Account object id per logical source + the two owner objects.
 const ACCOUNT_OBJECTS = {
-  dda:   '2-60442978',
-  loans: '2-60442977',
-  cd:    '2-60442980',
+  dda:   '2-60107989',
+  loans: '2-60108336',
+  cd:    '2-60108759',
 };
-const DEBIT_CARDS = '2-60442979';
+const DEBIT_CARDS = '2-60107457';
 const OWNER_OBJECTS = [['contact', 'contacts'], ['company', 'companies']];
 
 async function portalId() {

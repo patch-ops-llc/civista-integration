@@ -25,9 +25,9 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-const DEPOSITS = '2-60442978';
-const LOANS = '2-60442977';
-const TIME_DEPOSITS = '2-60442980';
+const DEPOSITS = '2-60107989';
+const LOANS = '2-60108336';
+const TIME_DEPOSITS = '2-60108759';
 
 // { objectType, name, numberDisplayHint }
 const UPDATES = [

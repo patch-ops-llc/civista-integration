@@ -17,7 +17,7 @@ if (!API_KEY) { console.error('HUBSPOT_API_KEY not set'); process.exit(1); }
 
 const H = { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' };
 
-const DEPOSITS = '2-60442978', LOANS = '2-60442977', TIME_DEPOSITS = '2-60442980';
+const DEPOSITS = '2-60107989', LOANS = '2-60108336', TIME_DEPOSITS = '2-60108759';
 
 const NUMBER_PROPS = [
   { obj: DEPOSITS,      name: 'interest_rate',      want: 'percentage' },

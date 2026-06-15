@@ -29,10 +29,10 @@ Silver Lake CSVs → SFTP/Upload → /incoming/
 | File | Records (prod) | HubSpot Target | CIF Column | Primary Key |
 |------|----------------|----------------|------------|-------------|
 | CIF | ~261k | Contacts + Companies | CIFNum | CIFNum |
-| DDA | ~250k | Custom: 2-60442978 | CIF# | account_key (branch\|type\|last4); collapses owner rows |
-| Loans | ~92k | Custom: 2-60442977 | CIFNum | account_key (branch\|type\|last4); collapses owner rows |
-| CDs | ~39k | Custom: 2-60442980 | CIFNum | account_key (branch\|type\|last4); collapses owner rows |
-| Debit Cards | ~76k | Custom: 2-60442979 | CIF# | Composite (generated) |
+| DDA | ~250k | Custom: 2-60107989 | CIF# | account_key (branch\|type\|last4); collapses owner rows |
+| Loans | ~92k | Custom: 2-60108336 | CIFNum | account_key (branch\|type\|last4); collapses owner rows |
+| CDs | ~39k | Custom: 2-60108759 | CIFNum | account_key (branch\|type\|last4); collapses owner rows |
+| Debit Cards | ~76k | Custom: 2-60107457 | CIF# | Composite (generated) |
 
 ## CIF Classification Rules
 
@@ -54,10 +54,10 @@ Silver Lake CSVs → SFTP/Upload → /incoming/
 
 ## HubSpot Custom Object IDs
 
-- Deposits (DDA): `2-60442978`
-- Loans: `2-60442977`
-- Time Deposits (CDs): `2-60442980`
-- Debit Cards: `2-60442979`
+- Deposits (DDA): `2-60107989`
+- Loans: `2-60108336`
+- Time Deposits (CDs): `2-60108759`
+- Debit Cards: `2-60107457`
 
 ## Build Order
 

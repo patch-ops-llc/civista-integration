@@ -42,7 +42,7 @@ if (!API_KEY) {
 }
 
 // Account object id per logical source + the two owner objects.
-const ACCOUNT_OBJECTS = { dda: '2-60442978', loans: '2-60442977', cd: '2-60442980' };
+const ACCOUNT_OBJECTS = { dda: '2-60107989', loans: '2-60108336', cd: '2-60108759' };
 const OWNER_OBJECTS = [['contact', 'contacts'], ['company', 'companies']];
 
 /**

@@ -276,10 +276,10 @@ app.post('/admin/reset-sandbox', async (req, res) => {
   const ALL_OBJECTS = [
     ['contacts',    'Contacts'],
     ['companies',   'Companies'],
-    ['2-60442978',  'Deposits'],
-    ['2-60442977',  'Loans'],
-    ['2-60442980',  'Time Deposits'],
-    ['2-60442979',  'Debit Cards'],
+    ['2-60107989',  'Deposits'],
+    ['2-60108336',  'Loans'],
+    ['2-60108759',  'Time Deposits'],
+    ['2-60107457',  'Debit Cards'],
   ];
 
   // Optional object filter: body { objects: [...] } limits which HubSpot
@@ -455,10 +455,10 @@ app.get('/api/stream', (req, res) => {
 const SCHEMA_OBJECTS = [
   { stagingTable: 'stg_contacts',      hsObject: 'contacts',   csvFile: 'HubSpot_CIF.csv',        label: 'Contacts',       fields: CIF_CONTACT_FIELDS },
   { stagingTable: 'stg_companies',     hsObject: 'companies',  csvFile: 'HubSpot_CIF.csv',        label: 'Companies',      fields: CIF_COMPANY_FIELDS },
-  { stagingTable: 'stg_deposits',      hsObject: '2-60442978', csvFile: 'HubSpot_DDA.csv',        label: 'Deposits',       fields: TABLES.dda.fields },
-  { stagingTable: 'stg_loans',         hsObject: '2-60442977', csvFile: 'HubSpot_Loan.csv',       label: 'Loans',          fields: TABLES.loans.fields },
-  { stagingTable: 'stg_time_deposits', hsObject: '2-60442980', csvFile: 'HubSpot_CD.csv',         label: 'Time Deposits',  fields: TABLES.cd.fields },
-  { stagingTable: 'stg_debit_cards',   hsObject: '2-60442979', csvFile: 'HubSpot_Debit_Card.csv', label: 'Debit Cards',    fields: TABLES.debit_cards.fields },
+  { stagingTable: 'stg_deposits',      hsObject: '2-60107989', csvFile: 'HubSpot_DDA.csv',        label: 'Deposits',       fields: TABLES.dda.fields },
+  { stagingTable: 'stg_loans',         hsObject: '2-60108336', csvFile: 'HubSpot_Loan.csv',       label: 'Loans',          fields: TABLES.loans.fields },
+  { stagingTable: 'stg_time_deposits', hsObject: '2-60108759', csvFile: 'HubSpot_CD.csv',         label: 'Time Deposits',  fields: TABLES.cd.fields },
+  { stagingTable: 'stg_debit_cards',   hsObject: '2-60107457', csvFile: 'HubSpot_Debit_Card.csv', label: 'Debit Cards',    fields: TABLES.debit_cards.fields },
 ];
 
 async function countCsvRows(filePath) {
@@ -1213,10 +1213,10 @@ async function seedMappingIssues() {
   const allFields = [
     { csv: 'HubSpot_CIF.csv', hsObject: 'contacts',    fields: CIF_CONTACT_FIELDS },
     { csv: 'HubSpot_CIF.csv', hsObject: 'companies',   fields: CIF_COMPANY_FIELDS },
-    { csv: 'HubSpot_DDA.csv', hsObject: '2-60442978',  fields: TABLES.dda.fields },
-    { csv: 'HubSpot_Loan.csv', hsObject: '2-60442977', fields: TABLES.loans.fields },
-    { csv: 'HubSpot_CD.csv', hsObject: '2-60442980',   fields: TABLES.cd.fields },
-    { csv: 'HubSpot_Debit_Card.csv', hsObject: '2-60442979', fields: TABLES.debit_cards.fields },
+    { csv: 'HubSpot_DDA.csv', hsObject: '2-60107989',  fields: TABLES.dda.fields },
+    { csv: 'HubSpot_Loan.csv', hsObject: '2-60108336', fields: TABLES.loans.fields },
+    { csv: 'HubSpot_CD.csv', hsObject: '2-60108759',   fields: TABLES.cd.fields },
+    { csv: 'HubSpot_Debit_Card.csv', hsObject: '2-60107457', fields: TABLES.debit_cards.fields },
   ];
   for (const grp of allFields) {
     for (const f of grp.fields) {
@@ -1282,7 +1282,7 @@ app.post('/api/demo-reset', async (req, res) => {
       catch (e) { result.postgres[t] = 'skip:' + (e.code || e.message); }
     }
     // 2. Archive every record in the 6 HubSpot objects.
-    const objects = ['contacts','companies','2-60442978','2-60442977','2-60442980','2-60442979'];
+    const objects = ['contacts','companies','2-60107989','2-60108336','2-60108759','2-60107457'];
     for (const obj of objects) {
       result.hubspot[obj] = await wipeHubspotObject(obj);
     }

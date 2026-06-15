@@ -55,7 +55,7 @@ Business records. Same source file as contacts — classified by Tax ID Type.
 
 ## DDA → HubSpot Custom Object: Deposits
 
-Checking and savings accounts. HubSpot Object ID: `2-60442978`
+Checking and savings accounts. HubSpot Object ID: `2-60107989`
 
 | HubSpot Property | Source Column | Notes |
 |-----------------|---------------|-------|
@@ -82,7 +82,7 @@ Checking and savings accounts. HubSpot Object ID: `2-60442978`
 
 ## Loans → HubSpot Custom Object: Loans
 
-All loan products. HubSpot Object ID: `2-60442977`
+All loan products. HubSpot Object ID: `2-60108336`
 
 | HubSpot Property | Source Column | Notes |
 |-----------------|---------------|-------|
@@ -107,7 +107,7 @@ All loan products. HubSpot Object ID: `2-60442977`
 
 ## CDs → HubSpot Custom Object: Time Deposits
 
-Certificates of Deposit. HubSpot Object ID: `2-60442980`
+Certificates of Deposit. HubSpot Object ID: `2-60108759`
 
 | HubSpot Property | Source Column | Notes |
 |-----------------|---------------|-------|
@@ -131,7 +131,7 @@ Certificates of Deposit. HubSpot Object ID: `2-60442980`
 
 ## Debit Cards → HubSpot Custom Object: Debit Cards
 
-HubSpot Object ID: `2-60442979`
+HubSpot Object ID: `2-60107457`
 
 | HubSpot Property | Source Column | Notes |
 |-----------------|---------------|-------|
