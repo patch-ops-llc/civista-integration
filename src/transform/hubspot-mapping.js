@@ -58,7 +58,11 @@ const CIF_COMMON = [
   { csv: 'EnrollmentDt',        prop: 'enrollment_date',                         type: 'date', coerce: 'date_only' },
   { csv: 'CentralGroupID',      prop: 'central_group_id',                        type: 'string' },
   { csv: 'TextOptIn',           prop: 'text_opt_in',                             type: 'bool', coerce: 'yn_to_bool' },
-  { csv: 'DiscAcpt',            prop: 'estatement_disclosure_acceptance_date',   type: 'bool', coerce: 'yn_to_bool' },
+  // DiscAcpt is Y/N. The prod portal's original `estatement_disclosure_acceptance_date`
+  // is typed `date` and is referenced by client lists/workflows, so it can't be
+  // retyped. We write the boolean to a dedicated `estatement_disclosure_accepted`
+  // property instead (created by scripts/create-disclosure-bool.js).
+  { csv: 'DiscAcpt',            prop: 'estatement_disclosure_accepted',          type: 'bool', coerce: 'yn_to_bool' },
 ];
 
 // Contact-only properties (don't exist on HubSpot companies).
