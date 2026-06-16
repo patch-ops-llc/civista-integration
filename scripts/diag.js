@@ -64,5 +64,17 @@ async function shippedCounts() {
   console.log('by_type:', JSON.stringify(byType));
   console.log('by_severity:', JSON.stringify(bySev));
 
+  console.log('\n=== hard-failure samples (error severity, non-benign types) ===');
+  const samples = await pool.query(`
+    SELECT source_table, source_key, error_type, LEFT(error_message, 180) AS msg
+    FROM sync_errors
+    WHERE error_type IN ('hubspot_record','hubspot_batch_failed','classification','date_unparseable','validation')
+    ORDER BY created_at DESC
+    LIMIT 40
+  `);
+  for (const r of samples.rows) {
+    console.log(`[${r.error_type}] ${r.source_table || ''} key=${r.source_key || '-'} :: ${r.msg}`);
+  }
+
   process.exit(0);
 })().catch(e => { console.error(e.message); process.exit(1); });
