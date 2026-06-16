@@ -90,7 +90,7 @@ async function initDb() {
         enrollment_date TEXT,
         central_group_id TEXT,
         text_opt_in TEXT,
-        estatement_disclosure_acceptance_date TEXT,
+        estatement_disclosure_accepted TEXT,
         -- Internal
         row_hash VARCHAR(64),
         loaded_at TIMESTAMPTZ DEFAULT NOW()
@@ -133,7 +133,7 @@ async function initDb() {
         enrollment_date TEXT,
         central_group_id TEXT,
         text_opt_in TEXT,
-        estatement_disclosure_acceptance_date TEXT,
+        estatement_disclosure_accepted TEXT,
         -- Internal
         row_hash VARCHAR(64),
         loaded_at TIMESTAMPTZ DEFAULT NOW()
@@ -329,6 +329,15 @@ async function initDb() {
     // (deferred) association engine.
     for (const t of ['stg_deposits', 'stg_loans', 'stg_time_deposits']) {
       await client.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS relationship VARCHAR(8)`);
+    }
+
+    // eStatement disclosure (DiscAcpt) moved from the date-typed
+    // estatement_disclosure_acceptance_date to a boolean property
+    // estatement_disclosure_accepted (prod's date property is referenced by
+    // client automation and cannot be retyped). Mirror the rename on the
+    // staging tables for pre-existing deployments.
+    for (const t of ['stg_contacts', 'stg_companies']) {
+      await client.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS estatement_disclosure_accepted TEXT`);
     }
 
     // Account-level dedup model (Option B): a single physical account appears
