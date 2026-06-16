@@ -257,6 +257,12 @@ function collectOffendingProps(status, body, only) {
     const re = /"name"\s*:\s*"([^"]+)"/g;
     let m;
     while ((m = re.exec(msg)) !== null) props.add(m[1]);
+    // Email-uniqueness collisions against an EXISTING record come back as a
+    // 400 worded "Cannot set PropertyValueCoordinates{...propertyName=email,
+    // value=...} on <id>" (no "name":"..." token). Catch the propertyName=<prop>
+    // form too so the offending prop is stripped and the record still upserts.
+    const re2 = /propertyName=([A-Za-z0-9_]+)/g;
+    while ((m = re2.exec(msg)) !== null) props.add(m[1]);
   }
   if (Array.isArray(body?.errors)) {
     for (const e of body.errors) if (e && e.name) props.add(e.name);
