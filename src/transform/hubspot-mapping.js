@@ -91,7 +91,14 @@ const DDA_FIELDS = [
   // physical account; see ACCOUNT_KEY_COLUMNS / buildAccountKey). It is NOT a
   // CSV column — it's derived during parse — so it carries no `csv` source.
   { csv: null,            prop: 'account_key',              type: 'string', derived: true },
-  { csv: 'PrimaryKey',    prop: 'primary_key',              type: 'string' },
+  // primary_key is the per-owner-row hash. The parser still needs it (it's the
+  // account_key fallback `PK:<primary_key>` and the collision-guard re-key), so
+  // it stays mapped — but `send: false` keeps it OFF the HubSpot payload. The
+  // HubSpot property is unique, and under the dedup model split/singleton rows
+  // reuse primary_key values still held by pre-existing merged records, so
+  // sending it 400s per record (record_synced_without_props flood). Resolves
+  // fully on cutover purge; held now to quiet the noise.
+  { csv: 'PrimaryKey',    prop: 'primary_key',              type: 'string', send: false, holdReason: 'Per-owner hash; HubSpot property is unique and conflicts with pre-existing merged records. Captured for account_key fallback only; not transmitted.' },
   { csv: 'Acctlast4',     prop: 'last_4_account_digits',    type: 'string' },
   { csv: 'CIF#',          prop: 'cif_number',               type: 'string' },
   { csv: 'InterestRate',  prop: 'interest_rate',            type: 'number' },
@@ -122,7 +129,9 @@ const DDA_FIELDS = [
 // Loans CSV → Loans (custom object 2-60108336).
 const LOANS_FIELDS = [
   { csv: null,              prop: 'account_key',            type: 'string', derived: true },
-  { csv: 'PrimaryKey',      prop: 'primary_key',            type: 'string' },
+  // See DDA note: captured for account_key fallback / collision guard; held off
+  // the HubSpot payload because the unique primary_key property 400s on conflict.
+  { csv: 'PrimaryKey',      prop: 'primary_key',            type: 'string', send: false, holdReason: 'Per-owner hash; HubSpot property is unique and conflicts with pre-existing merged records. Captured for account_key fallback only; not transmitted.' },
   { csv: 'acctlast4',       prop: 'last_4_account_digits',  type: 'string' },
   { csv: 'CIFNum',          prop: 'cif_number',             type: 'string' },
   { csv: 'InterestRate',    prop: 'interest_rate',          type: 'number' },
@@ -144,7 +153,9 @@ const LOANS_FIELDS = [
 // CD CSV → Time Deposits (custom object 2-60108759).
 const CD_FIELDS = [
   { csv: null,            prop: 'account_key',              type: 'string', derived: true },
-  { csv: 'PrimaryKey',    prop: 'primary_key',              type: 'string' },
+  // See DDA note: captured for account_key fallback / collision guard; held off
+  // the HubSpot payload because the unique primary_key property 400s on conflict.
+  { csv: 'PrimaryKey',    prop: 'primary_key',              type: 'string', send: false, holdReason: 'Per-owner hash; HubSpot property is unique and conflicts with pre-existing merged records. Captured for account_key fallback only; not transmitted.' },
   { csv: 'AcctLast4',     prop: 'last_4_account_digits',    type: 'string' },
   { csv: 'CIFNum',        prop: 'cif_number',               type: 'string' },
   { csv: 'InterestRate',  prop: 'interest_rate',            type: 'number' },

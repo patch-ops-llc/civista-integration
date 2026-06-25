@@ -53,6 +53,19 @@ const FILE_SOURCE_MAP = {
 const ACCEPTED_SUFFIX_DESCRIPTION =
   'any HubSpot_<source>*.csv (canonical, dedup suffix, date stamp, TRUNC, _v2, _backup, ...)';
 
+// Variant/test files that must NEVER be treated as a daily extract. Because the
+// accept pattern is prefix-based, a file like "HubSpot_CD_AcctKey_Added.csv"
+// matches the HubSpot_CD stem and would, under the most-recent-by-mtime rule,
+// silently displace that day's real daily extract (shunting the real file to
+// quarantine and syncing the static test snapshot instead). "_AcctKey_Added" is
+// the client's pre-cutover test marker; production files keep their canonical
+// names, so this exclusion is safe to keep permanently. Excluded files are left
+// untouched in incomingDir (preserved for retrieval/validation) and are never
+// matched, processed, or quarantined. At cutover the daily extract keeps its
+// canonical name (just with the new column added), so nothing here needs to
+// change — remove only if the client ever ships a daily file with this marker.
+const EXCLUDED_FILE_PATTERN = /_AcctKey_Added/i;
+
 function buildAcceptPattern(canonical) {
   const stem = canonical.replace(/\.csv$/, '');
   const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -401,7 +414,20 @@ async function runFullSync(incomingDir, archiveDir, quarantineDir) {
     return { runs: results, reconciled: true };
   }
 
-  const files = fs.readdirSync(incomingDir).filter(f => f.endsWith('.csv'));
+  const allCsvFiles = fs.readdirSync(incomingDir).filter(f => f.endsWith('.csv'));
+
+  // Hold back variant/test files so they can't hijack a daily stem (see
+  // EXCLUDED_FILE_PATTERN). They stay in incomingDir, untouched, for retrieval.
+  const excludedFiles = allCsvFiles.filter(f => EXCLUDED_FILE_PATTERN.test(f));
+  const files = allCsvFiles.filter(f => !EXCLUDED_FILE_PATTERN.test(f));
+  if (excludedFiles.length > 0) {
+    await loud.warn({
+      event: 'test_file_ignored',
+      message: `Held back ${excludedFiles.length} variant/test file(s) that match a daily stem but must not displace the daily extract: ${excludedFiles.join(', ')}. Left in incoming for retrieval; not processed.`,
+      context: { excluded: excludedFiles, pattern: String(EXCLUDED_FILE_PATTERN) },
+    });
+  }
+
   if (files.length === 0) {
     console.log('No CSV files found in incoming directory');
     return { runs: results, reconciled: true };
