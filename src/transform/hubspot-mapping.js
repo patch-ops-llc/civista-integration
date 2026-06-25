@@ -195,10 +195,46 @@ const DEBIT_CARDS_FIELDS = [
  * Collision/over-merge guard: if any key component is missing on a row, we fall
  * back to `PK:<primary_key>` so the row stays its own singleton account rather
  * than being merged with other under-identified rows.
+ *
+ * CONFIRMED NOT UNIQUE (Jun 2026): this key is demonstrably too coarse. In prod
+ * (portal 50181316) key `101|D|1000` merged an individual's deposit and a
+ * business's deposit into one record (two distinct PRIMARY OWNERs), leaking
+ * owners across unrelated customers. Until Civista supplies a true account-level
+ * identifier (full account number — only last-4 is in the feed today), the parser
+ * applies a collision guard: any group spanning >1 distinct primary-owner CIF is
+ * split back to per-row `PK:<primary_key>` keys instead of being merged (see
+ * `parseAndStage` in src/ingestion/csv-parser.js). Replace these columns with the
+ * real account number once the mapping doc lands — this is the single source of
+ * truth for the grouping.
  */
 const ACCOUNT_KEY_COLUMNS = ['branch_number', 'account_type', 'last_4_account_digits'];
 
-function buildAccountKey(mappedRow) {
+/**
+ * CSV header of the client-provided account-level key — a hash of
+ * (account number + account type) that is IDENTICAL across every owner row of a
+ * single physical account (Keith / Civista, Jun 2026). This is the correct
+ * grouping key: it collapses joint-account owner rows onto one record without the
+ * last-4 collisions of the provisional key. Once Keith's `*_AcctKey_Added` files
+ * land, set this to the exact header (env override supported for quick testing).
+ * While null, we fall back to ACCOUNT_KEY_COLUMNS + the parser's collision guard.
+ */
+const ACCOUNT_KEY_SOURCE_COLUMN = process.env.ACCOUNT_KEY_SOURCE_COLUMN || null; // e.g. 'AcctKey'
+
+/**
+ * Derive the account-level grouping key for one row.
+ *   1. Preferred: the client-provided consistent account key column, if present.
+ *   2. Fallback: provisional branch|type|last4 (known to collide — guarded).
+ *   3. Last resort: `PK:<primary_key>` so under-identified rows never merge.
+ * `rawRow` is the BOM-stripped CSV row (column lookups); pass it so we can read
+ * the provided key column, which is not part of the HubSpot field mapping.
+ */
+function buildAccountKey(mappedRow, rawRow = null) {
+  if (ACCOUNT_KEY_SOURCE_COLUMN && rawRow) {
+    const provided = rawRow[ACCOUNT_KEY_SOURCE_COLUMN];
+    if (provided !== null && provided !== undefined && String(provided).trim() !== '') {
+      return String(provided).trim();
+    }
+  }
   const parts = ACCOUNT_KEY_COLUMNS.map(c => {
     const v = mappedRow[c];
     return v === null || v === undefined ? '' : String(v).trim();
@@ -300,6 +336,7 @@ module.exports = {
   CD_FIELDS,
   DEBIT_CARDS_FIELDS,
   ACCOUNT_KEY_COLUMNS,
+  ACCOUNT_KEY_SOURCE_COLUMN,
   ACCOUNT_SOURCES,
   buildAccountKey,
   classifyCifRow,

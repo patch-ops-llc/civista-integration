@@ -280,7 +280,9 @@ async function parseAndStage(filePath, source) {
 
       if (isAccountSource) {
         // Derive the account-level key and collect for end-of-parse collapse.
-        mapped.account_key = buildAccountKey(mapped);
+        // Pass lookupRow so buildAccountKey can read the client-provided account
+        // key column (ACCOUNT_KEY_SOURCE_COLUMN) when present.
+        mapped.account_key = buildAccountKey(mapped, lookupRow);
         accountEntries.push({
           mapped,
           accountKey: mapped.account_key,
@@ -310,9 +312,55 @@ async function parseAndStage(filePath, source) {
             if (!g) { g = []; groups.set(gkey, g); }
             g.push(e);
           }
+
+          // COLLISION GUARD (interim, pending a true unique account number from
+          // Civista's mapping doc). The provisional account_key
+          // (branch|type|last4) is NOT guaranteed unique: distinct physical
+          // accounts that share branch+type+last4 collide into one group and
+          // would be merged into a single HubSpot record, cross-associating
+          // unrelated owners. This is a confirmed production privacy issue
+          // (prod key 101|D|1000 merged an individual's and a business's
+          // accounts). A physical account has exactly ONE primary owner (code
+          // 'P'), so a group carrying >1 distinct primary-owner CIF is proof of
+          // a collision. We refuse to merge such groups — every row in them is
+          // re-keyed to its own per-row primary_key so unrelated owners can
+          // never share a record. Legit single-account groups (including real
+          // multi-owner joint accounts) still collapse normally. This does NOT
+          // by itself clean records already merged in HubSpot — that requires a
+          // re-sync once a real account-level identifier is in place.
+          const finalGroups = new Map();
+          let collisionKeys = 0;
+          let collisionRows = 0;
+          const collisionSamples = [];
+          for (const [gkey, entries] of groups) {
+            const distinctPrimaries = new Set(
+              entries
+                .filter(e => e.code === PRIMARY_OWNER_CODE)
+                .map(e => e.mapped.cif_number)
+                .filter(c => c !== null && c !== undefined && c !== '')
+            );
+            if (distinctPrimaries.size > 1) {
+              collisionKeys++;
+              collisionRows += entries.length;
+              if (collisionSamples.length < 10) {
+                collisionSamples.push({ account_key: gkey, primary_cifs: Array.from(distinctPrimaries) });
+              }
+              let splitSeq = 0;
+              for (const e of entries) {
+                const pk = e.mapped.primary_key;
+                const safeKey = pk ? `PK:${String(pk).trim()}` : `${gkey}__split_${splitSeq++}`;
+                e.mapped.account_key = safeKey;
+                e.accountKey = safeKey;
+                finalGroups.set(safeKey, [e]);
+              }
+            } else {
+              finalGroups.set(gkey, entries);
+            }
+          }
+
           const accountRows = [];
           const ownerRows = [];
-          for (const entries of groups.values()) {
+          for (const entries of finalGroups.values()) {
             // Canonical row = primary owner (code 'P') if present, else first.
             const canonical = entries.find(e => e.code === PRIMARY_OWNER_CODE) || entries[0];
             accountRows.push(canonical.mapped);
@@ -329,7 +377,15 @@ async function parseAndStage(filePath, source) {
           }
           buckets[config.staging] = accountRows;
           await insertRows(config.ownerStaging, ownerRows);
-          console.log(`Collapsed ${accountEntries.length} ${source} owner rows into ${accountRows.length} accounts; staged ${ownerRows.length} owner links into ${config.ownerStaging}`);
+          if (collisionKeys > 0) {
+            await loud.alarm({
+              event: 'account_key_collision',
+              message: `${source}: ${collisionKeys} account_key(s) covered >1 distinct primary owner — the provisional branch|type|last4 key is not unique. ${collisionRows} owner rows were split to per-row keys to prevent cross-customer merges. A true unique account number (from Civista's mapping doc) is required for correct deduplication.`,
+              sourceTable: config.staging,
+              context: { samples: collisionSamples },
+            });
+          }
+          console.log(`Collapsed ${accountEntries.length} ${source} owner rows into ${accountRows.length} accounts (${collisionKeys} collision key(s) split to per-row keys); staged ${ownerRows.length} owner links into ${config.ownerStaging}`);
         }
 
         const byTable = {};
